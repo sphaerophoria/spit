@@ -1,0 +1,16 @@
+[package]
+name = "personal_git_gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.55"
+eframe = "0.17.0"
+env_logger = "0.9.0"
+log = "0.4.14"
+git2 = "0.14.0"
+rfd = "0.8.0"
+
+[dev-dependencies]
+tempfile = "3.3.0"
+tar = "0.4.38"
