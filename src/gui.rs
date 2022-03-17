@@ -220,7 +220,7 @@ fn render_commit_log(ui: &mut egui::Ui, rect: egui::Rect, commit_graph: &Option<
         painter.text(
             text_pos,
             egui::Align2::LEFT_CENTER,
-            &node.title,
+            &node.id,
             font.clone(),
             stroke.color,
         );

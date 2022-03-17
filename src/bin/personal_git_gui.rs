@@ -11,11 +11,7 @@ fn main() {
     let native_options = eframe::NativeOptions::default();
 
     std::thread::spawn(move || {
-        let mut app = App {
-            tx: app_tx,
-            rx: app_rx,
-            repo: None,
-        };
+        let mut app = App::new(app_tx, app_rx);
         app.run();
     });
 

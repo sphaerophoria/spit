@@ -1,5 +1,7 @@
+use crate::git::{CommitMetadata, History, ObjectId};
+
 use anyhow::{Context, Result};
-use git2::{Commit, Oid, Repository};
+use git2::Repository;
 use log::debug;
 
 #[derive(Debug)]
@@ -26,9 +28,7 @@ impl Edge {
 #[derive(Debug)]
 pub struct CommitNode {
     pub position: GraphPoint,
-    pub title: String,
-    pub body: String,
-    pub hash: String,
+    pub id: ObjectId,
 }
 
 pub struct HistoryGraph {
@@ -38,7 +38,7 @@ pub struct HistoryGraph {
 
 #[derive(Debug)]
 struct TailData {
-    oid: Oid,
+    oid: ObjectId,
     edge_start_y: i32,
 }
 
@@ -50,15 +50,15 @@ struct GraphBuilder {
 }
 
 impl GraphBuilder {
-    fn process_commit(&mut self, commit: &Commit) -> Result<()> {
+    fn process_commit(&mut self, commit: &CommitMetadata) -> Result<()> {
         let commit_y_pos = self.nodes.len().try_into().context("Too many commits")?;
         let commit_tail_idx = ensure_commit_in_vec(commit, &mut self.tails, commit_y_pos);
-        let parent_ids: Vec<_> = commit.parent_ids().collect();
+        let parent_ids = &commit.parents;
 
         add_commit_to_node_list(commit_tail_idx, commit, &mut self.nodes)?;
         debug!("Tails before removal: {:?}", self.tails);
         let removed_data =
-            replace_tail_with_parents(&parent_ids, commit_tail_idx, commit_y_pos, &mut self.tails)?;
+            replace_tail_with_parents(parent_ids, commit_tail_idx, commit_y_pos, &mut self.tails)?;
         // If we did not replace ourselves we need to adjust all lines
         debug!("Tails after removal: {:?}", self.tails);
         let initial_edges = self.edges.len();
@@ -97,7 +97,7 @@ impl GraphBuilder {
         draw_parent_connections(
             commit_tail_idx,
             commit_y_pos,
-            &parent_ids,
+            parent_ids,
             &mut self.tails,
             &mut self.edges,
         )?;
@@ -118,7 +118,7 @@ impl GraphBuilder {
 
 fn add_commit_to_node_list(
     x_idx: usize,
-    commit: &Commit,
+    commit: &CommitMetadata,
     node_list: &mut Vec<CommitNode>,
 ) -> Result<()> {
     let x = x_idx.try_into().context("Commit index too large")?;
@@ -127,31 +127,22 @@ fn add_commit_to_node_list(
         .map(|node| node.position.y + 1)
         .unwrap_or(0);
     let position = GraphPoint { x, y };
-    let message = commit.message().unwrap_or("");
-    let (title, body) = message.split_once('\n').unwrap_or((message, ""));
-    let title = title.to_string();
-    let body = body.to_string();
-    let hash = commit.id().to_string();
-    node_list.push(CommitNode {
-        position,
-        title,
-        body,
-        hash,
-    });
+    let id = commit.id.clone();
+    node_list.push(CommitNode { position, id });
     Ok(())
 }
 
-fn ensure_commit_in_vec(commit: &Commit, vec: &mut Vec<TailData>, y_pos: i32) -> usize {
+fn ensure_commit_in_vec(commit: &CommitMetadata, vec: &mut Vec<TailData>, y_pos: i32) -> usize {
     let found_idx = vec
         .iter()
         .enumerate()
-        .find(|(_, tail_data)| tail_data.oid == commit.id())
+        .find(|(_, tail_data)| tail_data.oid == commit.id)
         .map(|(idx, _)| idx);
     if let Some(found_idx) = found_idx {
         found_idx
     } else {
         let tail_data = TailData {
-            oid: commit.id(),
+            oid: commit.id.clone(),
             edge_start_y: y_pos,
         };
         vec.push(tail_data);
@@ -160,7 +151,7 @@ fn ensure_commit_in_vec(commit: &Commit, vec: &mut Vec<TailData>, y_pos: i32) ->
 }
 
 fn replace_tail_with_parents(
-    parent_ids: &[Oid],
+    parent_ids: &[ObjectId],
     x_idx: usize,
     commit_y: i32,
     tails: &mut Vec<TailData>,
@@ -174,12 +165,12 @@ fn replace_tail_with_parents(
 
         if replaced_self {
             let tail_data = TailData {
-                oid: *parent_id,
+                oid: parent_id.clone(),
                 edge_start_y: commit_y + 1,
             };
             tails.push(tail_data);
         } else {
-            tails[x_idx].oid = *parent_id;
+            tails[x_idx].oid = parent_id.clone();
             replaced_self = true;
         }
     }
@@ -217,7 +208,7 @@ fn draw_removed_node_edges(
 fn draw_parent_connections(
     commit_x_idx: usize,
     commit_y_pos: i32,
-    parent_ids: &[Oid],
+    parent_ids: &[ObjectId],
     tails: &mut [TailData],
     edges: &mut Vec<Edge>,
 ) -> Result<()> {
@@ -226,7 +217,7 @@ fn draw_parent_connections(
             continue;
         }
 
-        if parent_ids.iter().any(|&id| id == tail.oid) {
+        if parent_ids.iter().any(|id| *id == tail.oid) {
             let x_pos = commit_x_idx.try_into()?;
             edges.push(Edge::new(
                 x_pos,
@@ -257,30 +248,40 @@ fn finish_edges(tails: &[TailData], end_y: i32, edges: &mut Vec<Edge>) -> Result
     Ok(())
 }
 
-pub fn build_git_history_graph(repo: &Repository) -> Result<HistoryGraph> {
-    let branches = repo.branches(None)?;
+pub(crate) fn build_git_history_graph(
+    repo: &Repository,
+    history: &mut History,
+) -> Result<HistoryGraph> {
+    // FIXME: Fall back on libgit2 on failure
 
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
-    for b in branches {
-        let (branch, _branchtype) = b?;
-        if let Some(t) = branch.get().target() {
-            revwalk.push(t)?;
-        }
-    }
+    //let branches = repo.branches(None)?;
+    //let mut revwalk = repo.revwalk()?;
+    //revwalk.push_head()?;
+    //for b in branches {
+    //    let (branch, _branchtype) = b?;
+    //    if let Some(t) = branch.get().target() {
+    //        revwalk.push(t)?;
+    //    }
+    //}
 
-    let mut sorting = git2::Sort::TOPOLOGICAL;
-    sorting.insert(git2::Sort::TIME);
-    revwalk.set_sorting(sorting).expect("Invalid sort method");
+    //let mut sorting = git2::Sort::TOPOLOGICAL;
+    //sorting.insert(git2::Sort::TIME);
+    //revwalk.set_sorting(sorting).expect("Invalid sort method");
 
     let mut graph_builder = GraphBuilder::default();
-    while let Some(Ok(rev)) = revwalk.next() {
-        let commit = repo
-            .find_commit(rev)
-            .expect("revwalk did not return a commit");
+    let mut parents: Vec<ObjectId> = Vec::new();
+    for branch in repo.branches(None)? {
+        let (branch, _) = branch?;
+        let r = branch.into_reference();
+        let r = r.resolve().unwrap();
+        let oid = r.target().unwrap();
+        parents.push(oid.as_bytes().try_into()?);
+    }
 
+    let revwalk = history.metadata_iter(&parents)?;
+    for metadata in revwalk {
         graph_builder
-            .process_commit(&commit)
+            .process_commit(metadata)
             .context("Failed to add commit to graph")?;
     }
 
@@ -312,7 +313,8 @@ mod tests {
             .unwrap();
 
         let repo = git2::Repository::open(tmp_dir.path())?;
-        let graph = build_git_history_graph(&repo)?;
+        let mut history = History::new(tmp_dir.path())?;
+        let graph = build_git_history_graph(&repo, &mut history)?;
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 0);
@@ -339,7 +341,8 @@ mod tests {
             .unwrap();
 
         let repo = git2::Repository::open(tmp_dir.path())?;
-        let graph = build_git_history_graph(&repo)?;
+        let mut history = History::new(tmp_dir.path())?;
+        let graph = build_git_history_graph(&repo, &mut history)?;
         assert_eq!(graph.nodes.len(), 4);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 1);
@@ -367,7 +370,8 @@ mod tests {
             .unwrap();
 
         let repo = git2::Repository::open(tmp_dir.path())?;
-        let graph = build_git_history_graph(&repo)?;
+        let mut history = History::new(tmp_dir.path())?;
+        let graph = build_git_history_graph(&repo, &mut history)?;
         assert_eq!(graph.nodes.len(), 4);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 0);
@@ -396,7 +400,8 @@ mod tests {
             .unwrap();
 
         let repo = git2::Repository::open(tmp_dir.path())?;
-        let graph = build_git_history_graph(&repo)?;
+        let mut history = History::new(tmp_dir.path())?;
+        let graph = build_git_history_graph(&repo, &mut history)?;
         assert_eq!(graph.nodes.len(), 6);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 1);
