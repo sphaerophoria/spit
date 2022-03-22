@@ -1,4 +1,4 @@
-use crate::git::{build_git_history_graph, History, HistoryGraph};
+use crate::git::{build_git_history_graph, HistoryGraph, Repo};
 
 use anyhow::{bail, Context, Result};
 use log::error;
@@ -22,18 +22,12 @@ pub enum AppEvent {
 pub struct App {
     tx: Sender<AppEvent>,
     rx: Receiver<AppRequest>,
-    repo: Option<git2::Repository>,
-    history: Option<History>,
+    repo: Option<Repo>,
 }
 
 impl App {
     pub fn new(tx: Sender<AppEvent>, rx: Receiver<AppRequest>) -> App {
-        App {
-            tx,
-            rx,
-            repo: None,
-            history: None,
-        }
+        App { tx, rx, repo: None }
     }
     pub fn run(&mut self) {
         while let Ok(req) = self.rx.recv() {
@@ -58,7 +52,7 @@ impl App {
                     None => bail!("Invalid repo"),
                 };
 
-                let git_dir = repo.workdir().unwrap_or_else(|| repo.path());
+                let git_dir = repo.git_dir();
 
                 let args = [
                     "-c",
@@ -77,14 +71,10 @@ impl App {
                     .context("Failed to send response to gui")?;
             }
             AppRequest::OpenRepo(path) => {
-                let repo =
-                    git2::Repository::open(&path).context("Failed to open git repository")?;
-                let history = History::new(&path).context("Failed to load git history")?;
+                let repo = Repo::new(&path).context("Failed to load git history")?;
                 self.repo = Some(repo);
-                self.history = Some(history);
-                let repo = self.repo.as_ref().unwrap();
-                let history = self.history.as_mut().unwrap();
-                let graph = build_git_history_graph(repo, history)?;
+                let repo = self.repo.as_mut().unwrap();
+                let graph = build_git_history_graph(repo)?;
                 self.tx
                     .send(AppEvent::CommitLogProcessed(graph))
                     .context("Failed to send response commit log")?;

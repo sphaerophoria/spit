@@ -1,7 +1,6 @@
-use crate::git::{CommitMetadata, History, ObjectId};
+use crate::git::{CommitMetadata, ObjectId, Repo};
 
 use anyhow::{Context, Result};
-use git2::Repository;
 use log::debug;
 
 #[derive(Debug)]
@@ -248,37 +247,14 @@ fn finish_edges(tails: &[TailData], end_y: i32, edges: &mut Vec<Edge>) -> Result
     Ok(())
 }
 
-pub(crate) fn build_git_history_graph(
-    repo: &Repository,
-    history: &mut History,
-) -> Result<HistoryGraph> {
-    // FIXME: Fall back on libgit2 on failure
-
-    //let branches = repo.branches(None)?;
-    //let mut revwalk = repo.revwalk()?;
-    //revwalk.push_head()?;
-    //for b in branches {
-    //    let (branch, _branchtype) = b?;
-    //    if let Some(t) = branch.get().target() {
-    //        revwalk.push(t)?;
-    //    }
-    //}
-
-    //let mut sorting = git2::Sort::TOPOLOGICAL;
-    //sorting.insert(git2::Sort::TIME);
-    //revwalk.set_sorting(sorting).expect("Invalid sort method");
-
+pub(crate) fn build_git_history_graph(repo: &mut Repo) -> Result<HistoryGraph> {
     let mut graph_builder = GraphBuilder::default();
     let mut parents: Vec<ObjectId> = Vec::new();
-    for branch in repo.branches(None)? {
-        let (branch, _) = branch?;
-        let r = branch.into_reference();
-        let r = r.resolve().unwrap();
-        let oid = r.target().unwrap();
-        parents.push(oid.as_bytes().try_into()?);
+    for branch in repo.branches()? {
+        parents.push(branch?.head);
     }
 
-    let revwalk = history.metadata_iter(&parents)?;
+    let revwalk = repo.metadata_iter(&parents)?;
     for metadata in revwalk {
         graph_builder
             .process_commit(metadata)

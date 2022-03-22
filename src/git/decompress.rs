@@ -9,7 +9,7 @@ pub(super) fn decompress_commit_metadata(
     from_pack: bool,
 ) -> Result<CommitMetadataWithoutId> {
     // FIXME: Long function that should be split up
- 
+
     // Long hashes are 20 bytes * 2 for string encoded
     const OBJ_HASH_LEN: usize = 40;
     // tree hash\n

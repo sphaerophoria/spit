@@ -1,5 +1,5 @@
 use crate::{
-    git::{decompress, pack::Pack, CommitMetadata, ObjectId},
+    git::{decompress, pack::Pack, Branch, CommitMetadata, ObjectId},
     Timer,
 };
 
@@ -14,7 +14,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) struct History {
+pub(crate) struct Repo {
+    git2_repo: git2::Repository,
     git_dir: PathBuf,
     packs: Vec<Pack>,
     // NOTE: We do not store the commit metadata within the hashmap directly because it makes it
@@ -25,13 +26,15 @@ pub(crate) struct History {
     decompressor: Decompress,
 }
 
-impl History {
-    pub(crate) fn new(repo_root: &Path) -> Result<History> {
+impl Repo {
+    pub(crate) fn new(repo_root: &Path) -> Result<Repo> {
         let git_dir = repo_root.join(".git");
         let packs = find_packs(&git_dir)?;
         let decompressor = Decompress::new(true);
+        let git2_repo = git2::Repository::open(repo_root).context("Failed to open git2 repo")?;
 
-        Ok(History {
+        Ok(Repo {
+            git2_repo,
             git_dir,
             packs,
             metadata_lookup: HashMap::new(),
@@ -102,6 +105,8 @@ impl History {
         &mut self,
         heads: &[ObjectId],
     ) -> Result<impl Iterator<Item = &CommitMetadata>> {
+        // FIXME: Fall back on libgit2 on failure
+
         let child_indices = self.build_reverse_dag(heads)?;
 
         // NOTE: From this point on it's guaranteed that all parents of heads are in our
@@ -157,6 +162,26 @@ impl History {
         );
 
         Ok(child_indices)
+    }
+
+    pub(crate) fn branches(&self) -> Result<impl Iterator<Item = Result<Branch>> + '_> {
+        Ok(self.git2_repo.branches(None)?.map(|b| -> Result<Branch> {
+            let b = b?.0;
+            let name = b.name()?.ok_or_else(|| Error::msg("Invalid branch name"))?;
+            let name = name.to_string();
+            let reference = b.into_reference().resolve()?;
+            let oid = reference
+                .target()
+                .ok_or_else(|| Error::msg("Failed to resolve reference"))?;
+            Ok(Branch {
+                name,
+                head: oid.into(),
+            })
+        }))
+    }
+
+    pub(crate) fn git_dir(&self) -> &Path {
+        &self.git_dir
     }
 }
 
@@ -279,7 +304,7 @@ mod test {
             .unpack(git_dir.path())
             .unwrap();
 
-        let mut history = History::new(&git_dir.path().to_path_buf())?;
+        let mut history = Repo::new(&git_dir.path().to_path_buf())?;
 
         let oid = "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?;
         let expected_parent: ObjectId = "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?;
@@ -303,7 +328,7 @@ mod test {
             .unpack(git_dir.path())
             .unwrap();
 
-        let mut history = History::new(&git_dir.path().to_path_buf())?;
+        let mut history = Repo::new(&git_dir.path().to_path_buf())?;
 
         let oid = "760e2389d32e245213eaf71d88e314fa63709c79".parse()?;
         let expected_parent: ObjectId = "54c637bcfcaab19064ac59db025bc05d941a3bf3".parse()?;
