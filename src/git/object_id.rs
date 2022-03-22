@@ -12,10 +12,28 @@ impl From<[u8; 20]> for ObjectId {
     }
 }
 
-impl From<git2::Oid> for ObjectId {
-    fn from(id: git2::Oid) -> Self {
+impl From<&git2::Oid> for ObjectId {
+    fn from(id: &git2::Oid) -> Self {
         let id: [u8; 20] = id.as_bytes().try_into().expect("Invalid OID");
         ObjectId { id }
+    }
+}
+
+impl From<git2::Oid> for ObjectId {
+    fn from(id: git2::Oid) -> Self {
+        From::from(&id)
+    }
+}
+
+impl From<ObjectId> for git2::Oid {
+    fn from(id: ObjectId) -> Self {
+        From::from(&id)
+    }
+}
+
+impl From<&ObjectId> for git2::Oid {
+    fn from(id: &ObjectId) -> Self {
+        git2::Oid::from_bytes(&id.id).expect("Invalid id")
     }
 }
 

@@ -27,6 +27,12 @@ pub(crate) struct Branch {
 }
 
 #[derive(Debug, Clone)]
+pub struct Commit {
+    pub(crate) metadata: CommitMetadata,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone)]
 struct CommitMetadataWithoutId {
     pub(crate) parents: Vec<ObjectId>,
     pub(crate) timestamp: DateTime<Utc>,

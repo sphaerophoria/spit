@@ -1,5 +1,5 @@
 use crate::{
-    git::{decompress, pack::Pack, Branch, CommitMetadata, ObjectId},
+    git::{decompress, pack::Pack, Branch, Commit, CommitMetadata, ObjectId},
     Timer,
 };
 
@@ -48,6 +48,30 @@ impl Repo {
         Ok(self
             .get_commit_metadata_idx(id)?
             .map(|idx| &self.metadata_storage[idx]))
+    }
+
+    pub(crate) fn get_commit(&mut self, id: &ObjectId) -> Result<Commit> {
+        let message = {
+            let commit = self
+                .git2_repo
+                .find_commit(id.into())
+                .context("Failed to find commit id")?;
+
+            commit
+                .message()
+                .map(|m| m.to_string())
+                .unwrap_or_else(String::new)
+        };
+
+        let metadata = self
+            .get_commit_metadata(id)
+            .context("Failed to lookup commit metadata")?
+            .ok_or_else(|| Error::msg("No metadata for commit"))?;
+
+        Ok(Commit {
+            metadata: metadata.clone(),
+            message,
+        })
     }
 
     /// Private implementation of get_commit_metadata that returns the vector index instead of a

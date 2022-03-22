@@ -1,4 +1,4 @@
-use crate::git::{build_git_history_graph, HistoryGraph, Repo};
+use crate::git::{build_git_history_graph, Commit, HistoryGraph, ObjectId, Repo};
 
 use anyhow::{bail, Context, Result};
 use log::error;
@@ -10,12 +10,14 @@ use std::{
 
 pub enum AppRequest {
     OpenRepo(PathBuf),
+    GetCommit(ObjectId),
     ExecuteGitCommand(String),
 }
 
 pub enum AppEvent {
     CommandExecuted(String),
     CommitLogProcessed(HistoryGraph),
+    CommitFetched(Commit),
     Error(String),
 }
 
@@ -70,6 +72,16 @@ impl App {
                     .send(AppEvent::CommandExecuted(parsed))
                     .context("Failed to send response to gui")?;
             }
+            AppRequest::GetCommit(id) => match &mut self.repo {
+                Some(repo) => {
+                    self.tx
+                        .send(AppEvent::CommitFetched(repo.get_commit(&id)?))
+                        .context("Failed to send commit fetched")?;
+                }
+                None => {
+                    bail!("Commit requested without valid repo");
+                }
+            },
             AppRequest::OpenRepo(path) => {
                 let repo = Repo::new(&path).context("Failed to load git history")?;
                 self.repo = Some(repo);

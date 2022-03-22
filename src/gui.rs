@@ -1,12 +1,19 @@
-use crate::{app::AppEvent, app::AppRequest, git::HistoryGraph};
+use crate::{
+    app::{AppEvent, AppRequest},
+    git::{Commit, HistoryGraph, ObjectId},
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use eframe::{
     egui::{self, Pos2, TextStyle, Widget},
     epi,
 };
 use log::error;
-use std::sync::mpsc::{Receiver, Sender};
+
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::mpsc::{Receiver, Sender},
+};
 
 pub struct Gui {
     tx: Sender<AppRequest>,
@@ -16,9 +23,13 @@ pub struct Gui {
     git_command: String,
     commit_graph: Option<HistoryGraph>,
     show_console: bool,
+    cached_commits: HashMap<ObjectId, Commit>,
+    cached_commit_order: VecDeque<ObjectId>,
 }
 
 impl Gui {
+    const MAX_CACHED_COMMITS: usize = 1000;
+
     pub fn new(tx: Sender<AppRequest>, rx: Receiver<AppEvent>) -> Gui {
         Gui {
             tx,
@@ -27,6 +38,8 @@ impl Gui {
             git_command: String::new(),
             commit_graph: None,
             show_console: false,
+            cached_commits: HashMap::new(),
+            cached_commit_order: VecDeque::new(),
         }
     }
 
@@ -35,6 +48,17 @@ impl Gui {
             AppEvent::CommandExecuted(s) => {
                 // FIXME: Rolling buffer
                 self.output.push(s);
+            }
+            AppEvent::CommitFetched(commit) => {
+                if self.cached_commit_order.len() >= Self::MAX_CACHED_COMMITS {
+                    let popped = self.cached_commit_order.pop_front().unwrap();
+                    self.cached_commits.remove(&popped);
+                }
+
+                self.cached_commit_order
+                    .push_back(commit.metadata.id.clone());
+                self.cached_commits
+                    .insert(commit.metadata.id.clone(), commit);
             }
             AppEvent::Error(e) => {
                 // FIXME: Proper error text
@@ -78,17 +102,22 @@ impl epi::App for Gui {
                 });
             }
 
-            egui::CentralPanel::default()
-                .show(ctx, |ui| -> Result<()> {
+            let missing_commits = egui::CentralPanel::default()
+                .show(ctx, |ui| -> Vec<ObjectId> {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, true])
                         .show_viewport(ui, |ui, rect| {
-                            render_commit_log(ui, rect, &self.commit_graph)
-                        });
-
-                    Ok(())
+                            render_commit_log(ui, rect, &self.commit_graph, &self.cached_commits)
+                        })
+                        .inner
                 })
-                .inner?;
+                .inner;
+
+            for id in missing_commits {
+                self.tx
+                    .send(AppRequest::GetCommit(id))
+                    .context("Failed to request commit")?;
+            }
 
             Ok(())
         })();
@@ -151,14 +180,15 @@ fn render_console(
     }
 }
 
-fn render_commit_log(ui: &mut egui::Ui, rect: egui::Rect, commit_graph: &Option<HistoryGraph>) {
-    if commit_graph.is_none() {
-        return;
-    }
-
+fn render_commit_log(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    commit_graph: &Option<HistoryGraph>,
+    commit_lookup: &HashMap<ObjectId, Commit>,
+) -> Vec<ObjectId> {
     let commit_graph = match commit_graph {
         Some(v) => v,
-        None => return,
+        None => return Vec::new(),
     };
 
     let font = ui.style().text_styles[&TextStyle::Body].clone();
@@ -207,6 +237,7 @@ fn render_commit_log(ui: &mut egui::Ui, rect: egui::Rect, commit_graph: &Option<
         max_edge_x = i32::max(edge_end, max_edge_x);
     }
 
+    let mut missing = Vec::new();
     for node in &commit_graph.nodes[start_idx..end_idx] {
         let node_pos = Pos2 {
             x: node.position.x as f32 * X_MULTIPLIER + x_offset,
@@ -217,12 +248,28 @@ fn render_commit_log(ui: &mut egui::Ui, rect: egui::Rect, commit_graph: &Option<
             x: max_edge_x as f32 * X_MULTIPLIER + x_offset + X_MULTIPLIER,
             y: node_pos.y,
         };
+
+        let message = match commit_lookup.get(&node.id) {
+            Some(v) => v
+                .message
+                .split('\n')
+                .next()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| v.message.clone()),
+            None => {
+                missing.push(node.id.clone());
+                node.id.to_string()
+            }
+        };
+
         painter.text(
             text_pos,
             egui::Align2::LEFT_CENTER,
-            &node.id,
+            &message,
             font.clone(),
             stroke.color,
         );
     }
+
+    missing
 }
