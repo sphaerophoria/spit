@@ -8,10 +8,10 @@ use eframe::{
     egui::{self, Pos2, TextStyle, Widget},
     epi,
 };
-use log::error;
+use log::{debug, error};
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -23,6 +23,7 @@ pub struct Gui {
     git_command: String,
     commit_graph: Option<HistoryGraph>,
     show_console: bool,
+    outgoing_requests: HashSet<ObjectId>,
     cached_commits: HashMap<ObjectId, Commit>,
     cached_commit_order: VecDeque<ObjectId>,
 }
@@ -38,6 +39,7 @@ impl Gui {
             git_command: String::new(),
             commit_graph: None,
             show_console: false,
+            outgoing_requests: HashSet::new(),
             cached_commits: HashMap::new(),
             cached_commit_order: VecDeque::new(),
         }
@@ -53,8 +55,11 @@ impl Gui {
                 if self.cached_commit_order.len() >= Self::MAX_CACHED_COMMITS {
                     let popped = self.cached_commit_order.pop_front().unwrap();
                     self.cached_commits.remove(&popped);
+                    debug!("Clearing commit {}", popped);
                 }
 
+                debug!("Received commit {}", commit.metadata.id);
+                self.outgoing_requests.remove(&commit.metadata.id);
                 self.cached_commit_order
                     .push_back(commit.metadata.id.clone());
                 self.cached_commits
@@ -114,9 +119,15 @@ impl epi::App for Gui {
                 .inner;
 
             for id in missing_commits {
-                self.tx
-                    .send(AppRequest::GetCommit(id))
-                    .context("Failed to request commit")?;
+                if !self.outgoing_requests.contains(&id) {
+                    debug!("Requesting commit {}", id);
+
+                    self.tx
+                        .send(AppRequest::GetCommit(id.clone()))
+                        .context("Failed to request commit")?;
+
+                    self.outgoing_requests.insert(id);
+                }
             }
 
             Ok(())
