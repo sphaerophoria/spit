@@ -5,13 +5,14 @@ use crate::{
 
 use anyhow::{Context, Result};
 use eframe::{
-    egui::{self, Pos2, TextStyle, Widget},
+    egui::{self, Pos2, Widget},
     epi,
 };
 use log::{debug, error};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    ops::Range,
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -109,10 +110,27 @@ impl epi::App for Gui {
 
             let missing_commits = egui::CentralPanel::default()
                 .show(ctx, |ui| -> Vec<ObjectId> {
+                    let text_style = egui::TextStyle::Body;
+                    let row_height = ui.text_style_height(&text_style);
+                    let commit_graph = match self.commit_graph.as_ref() {
+                        Some(v) => v,
+                        None => return Vec::new(),
+                    };
+
+                    if commit_graph.nodes.is_empty() {
+                        return Vec::new();
+                    }
+
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, true])
-                        .show_viewport(ui, |ui, rect| {
-                            render_commit_log(ui, rect, &self.commit_graph, &self.cached_commits)
+                        .show_rows(ui, row_height, commit_graph.nodes.len(), |ui, row_range| {
+                            render_commit_log(
+                                ui,
+                                row_range,
+                                row_height,
+                                commit_graph,
+                                &self.cached_commits,
+                            )
                         })
                         .inner
                 })
@@ -193,72 +211,65 @@ fn render_console(
 
 fn render_commit_log(
     ui: &mut egui::Ui,
-    rect: egui::Rect,
-    commit_graph: &Option<HistoryGraph>,
+    row_range: Range<usize>,
+    row_height: f32,
+    commit_graph: &HistoryGraph,
     commit_lookup: &HashMap<ObjectId, Commit>,
 ) -> Vec<ObjectId> {
-    let commit_graph = match commit_graph {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-
-    let font = ui.style().text_styles[&TextStyle::Body].clone();
-    let row_height = ui.fonts().row_height(&font);
-    let num_rows = commit_graph.nodes.len();
-
-    ui.set_height(num_rows as f32 * row_height);
-    ui.set_width(ui.available_size().x);
-
-    let start_idx = f32::floor(rect.top() / row_height) as usize;
-    let end_idx = f32::ceil(rect.bottom() / row_height) as usize;
-    let start_idx = usize::min(start_idx, commit_graph.nodes.len());
-    let end_idx = usize::min(end_idx, commit_graph.nodes.len());
-
-    let painter = ui.painter();
+    let mut missing = Vec::new();
 
     let stroke = ui.style().visuals.widgets.open.fg_stroke;
     const X_MULTIPLIER: f32 = 10.0;
-    let x_offset = row_height / 2.0 + rect.min.x;
+    let x_offset = 10.0;
 
     let mut max_edge_x = 0;
     let edge_end_idx = match commit_graph
         .edges
-        .binary_search_by(|elem| (elem.a.y as usize).cmp(&end_idx))
+        .binary_search_by(|elem| (elem.a.y as usize).cmp(&row_range.end))
     {
         Ok(v) => v,
         Err(v) => v,
     };
+
+    let y_spacing = ui.style().spacing.item_spacing.y;
+
+    let x_idx_to_x_pos = |idx| idx as f32 * X_MULTIPLIER + x_offset;
+    let y_idx_to_y_pos = |idx| idx as f32 * (row_height + y_spacing) + row_height / 2.0;
     for edge in &commit_graph.edges[..edge_end_idx] {
         // FIXME: as usize
         // FIXME: Filtering every frame is expensive
-        if (edge.b.y as usize) < start_idx || (edge.a.y as usize) > end_idx {
+        if (edge.b.y as usize) < row_range.start || (edge.a.y as usize) > row_range.end {
             continue;
         }
 
         let a = Pos2 {
-            x: edge.a.x as f32 * X_MULTIPLIER + x_offset,
-            y: edge.a.y as f32 * row_height - rect.top(),
+            x: x_idx_to_x_pos(edge.a.x),
+            y: y_idx_to_y_pos(edge.a.y as f32 - row_range.start as f32),
         };
         let b = Pos2 {
-            x: edge.b.x as f32 * X_MULTIPLIER + x_offset,
-            y: edge.b.y as f32 * row_height - rect.top(),
+            x: x_idx_to_x_pos(edge.b.x),
+            y: y_idx_to_y_pos(edge.b.y as f32 - row_range.start as f32),
         };
-        painter.line_segment([a, b], stroke);
+        ui.painter().line_segment([a, b], stroke);
         let edge_end = i32::max(edge.a.x, edge.b.x);
         max_edge_x = i32::max(edge_end, max_edge_x);
     }
 
-    let mut missing = Vec::new();
-    for node in &commit_graph.nodes[start_idx..end_idx] {
+    let text_rect = egui::Rect::from_min_max(
+        Pos2::new(
+            x_idx_to_x_pos(max_edge_x) + ui.spacing().item_spacing.x,
+            0.0,
+        ),
+        Pos2::new(ui.available_width(), ui.available_height()),
+    );
+    let mut text_ui = ui.child_ui(text_rect, egui::Layout::default());
+
+    for (idx, node) in commit_graph.nodes[row_range].iter().enumerate() {
         let node_pos = Pos2 {
-            x: node.position.x as f32 * X_MULTIPLIER + x_offset,
-            y: node.position.y as f32 * row_height - rect.top(),
+            x: x_idx_to_x_pos(node.position.x),
+            y: y_idx_to_y_pos(idx as f32),
         };
-        painter.circle_filled(node_pos, 3.0, stroke.color);
-        let text_pos = Pos2 {
-            x: max_edge_x as f32 * X_MULTIPLIER + x_offset + X_MULTIPLIER,
-            y: node_pos.y,
-        };
+        ui.painter().circle_filled(node_pos, 3.0, stroke.color);
 
         let message = match commit_lookup.get(&node.id) {
             Some(v) => v
@@ -273,13 +284,7 @@ fn render_commit_log(
             }
         };
 
-        painter.text(
-            text_pos,
-            egui::Align2::LEFT_CENTER,
-            &message,
-            font.clone(),
-            stroke.color,
-        );
+        egui::Label::new(&message).wrap(false).ui(&mut text_ui);
     }
 
     missing
