@@ -28,6 +28,7 @@ pub(crate) struct Branch {
 pub struct Commit {
     pub(crate) metadata: CommitMetadata,
     pub(crate) message: String,
+    pub(crate) author: String,
 }
 
 #[derive(Debug, Clone)]

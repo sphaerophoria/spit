@@ -51,16 +51,20 @@ impl Repo {
     }
 
     pub(crate) fn get_commit(&mut self, id: &ObjectId) -> Result<Commit> {
-        let message = {
+        let (message, author) = {
             let commit = self
                 .git2_repo
                 .find_commit(id.into())
                 .context("Failed to find commit id")?;
 
-            commit
+            let message = commit
                 .message()
                 .map(|m| m.to_string())
-                .unwrap_or_else(String::new)
+                .unwrap_or_else(String::new);
+
+            let author = commit.author().to_string();
+
+            (message, author)
         };
 
         let metadata = self
@@ -71,6 +75,7 @@ impl Repo {
         Ok(Commit {
             metadata: metadata.clone(),
             message,
+            author
         })
     }
 

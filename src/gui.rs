@@ -5,7 +5,7 @@ use crate::{
 
 use anyhow::{Context, Result};
 use eframe::{
-    egui::{self, Pos2, Widget},
+    egui::{self, Pos2, Sense, TextEdit, TextStyle, Widget},
     epi,
 };
 use log::{debug, error};
@@ -27,6 +27,7 @@ pub struct Gui {
     outgoing_requests: HashSet<ObjectId>,
     cached_commits: HashMap<ObjectId, Commit>,
     cached_commit_order: VecDeque<ObjectId>,
+    selected_commit: Option<ObjectId>,
 }
 
 impl Gui {
@@ -43,6 +44,7 @@ impl Gui {
             outgoing_requests: HashSet::new(),
             cached_commits: HashMap::new(),
             cached_commit_order: VecDeque::new(),
+            selected_commit: None,
         }
     }
 
@@ -54,7 +56,13 @@ impl Gui {
             }
             AppEvent::CommitFetched(commit) => {
                 if self.cached_commit_order.len() >= Self::MAX_CACHED_COMMITS {
-                    let popped = self.cached_commit_order.pop_front().unwrap();
+                    let mut popped = self.cached_commit_order.pop_front().unwrap();
+                    if Some(&popped) == self.selected_commit.as_ref() {
+                        // Ensure that the selected commit stays in the queue
+                        popped = self.cached_commit_order.pop_front().unwrap();
+                        self.cached_commit_order
+                            .push_back(self.selected_commit.clone().unwrap());
+                    }
                     self.cached_commits.remove(&popped);
                     debug!("Clearing commit {}", popped);
                 }
@@ -103,10 +111,42 @@ impl epi::App for Gui {
             });
 
             if self.show_console {
-                egui::TopBottomPanel::bottom("git_log").show(ctx, |ui| {
+                egui::TopBottomPanel::bottom("output").show(ctx, |ui| {
                     render_console(ui, &self.output, &self.tx, &mut self.git_command)
                 });
             }
+
+            egui::TopBottomPanel::bottom("commit_view_panel")
+                .default_height(150.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    let message = self
+                        .selected_commit
+                        .as_ref()
+                        .and_then(|id| self.cached_commits.get(id))
+                        .map(|commit| {
+                            format!("id: {}\n\
+                                    author: {}\n\
+                                    timestamp: {}\n\
+                                    \n\
+                                    {}",
+                                    commit.metadata.id,
+                                    commit.author,
+                                    commit.metadata.timestamp,
+                                    commit.message)
+                        })
+                        .unwrap_or_else(String::new);
+
+                    egui::ScrollArea::vertical()
+                        .max_height(f32::INFINITY)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            TextEdit::multiline(&mut message.as_str())
+                                .font(TextStyle::Monospace)
+                                .desired_width(ui.available_width())
+                                .ui(ui);
+                        });
+                });
 
             let missing_commits = egui::CentralPanel::default()
                 .show(ctx, |ui| -> Vec<ObjectId> {
@@ -122,7 +162,7 @@ impl epi::App for Gui {
                     }
 
                     egui::ScrollArea::vertical()
-                        .auto_shrink([false, true])
+                        .auto_shrink([false, false])
                         .show_rows(ui, row_height, commit_graph.nodes.len(), |ui, row_range| {
                             render_commit_log(
                                 ui,
@@ -130,6 +170,7 @@ impl epi::App for Gui {
                                 row_height,
                                 commit_graph,
                                 &self.cached_commits,
+                                &mut self.selected_commit,
                             )
                         })
                         .inner
@@ -215,6 +256,7 @@ fn render_commit_log(
     row_height: f32,
     commit_graph: &HistoryGraph,
     commit_lookup: &HashMap<ObjectId, Commit>,
+    selected_commit: &mut Option<ObjectId>,
 ) -> Vec<ObjectId> {
     let mut missing = Vec::new();
 
@@ -284,7 +326,37 @@ fn render_commit_log(
             }
         };
 
-        egui::Label::new(&message).wrap(false).ui(&mut text_ui);
+        // Would be nice to use SeletableLable, but I couldn't find a way to prevent it from
+        // wrapping
+        let (pos, galley, message_response) = egui::Label::new(&message)
+            .wrap(false)
+            .sense(Sense::click())
+            .layout_in_ui(&mut text_ui);
+
+        if message_response.clicked() {
+            *selected_commit = Some(node.id.clone());
+        }
+
+        if selected_commit.as_ref() == Some(&node.id) {
+            let visuals = text_ui.style().interact_selectable(&message_response, true);
+            text_ui.painter().rect(
+                message_response.rect,
+                visuals.rounding,
+                visuals.bg_fill,
+                visuals.bg_stroke,
+            );
+        } else {
+            let visuals = text_ui
+                .style()
+                .interact_selectable(&message_response, false);
+            text_ui.painter().rect_stroke(
+                message_response.rect,
+                visuals.rounding,
+                visuals.bg_stroke,
+            );
+        }
+
+        galley.paint_with_visuals(text_ui.painter(), pos, text_ui.visuals().noninteractive());
     }
 
     missing
