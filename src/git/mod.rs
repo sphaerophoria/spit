@@ -18,7 +18,7 @@ pub(crate) struct CommitMetadata {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Branch {
+pub struct Branch {
     pub(crate) head: ObjectId,
     #[allow(unused)]
     pub(crate) name: String,

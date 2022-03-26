@@ -247,14 +247,10 @@ fn finish_edges(tails: &[TailData], end_y: i32, edges: &mut Vec<Edge>) -> Result
     Ok(())
 }
 
-pub(crate) fn build_git_history_graph(repo: &mut Repo) -> Result<HistoryGraph> {
+pub(crate) fn build_git_history_graph(repo: &mut Repo, heads: &[ObjectId]) -> Result<HistoryGraph> {
     let mut graph_builder = GraphBuilder::default();
-    let mut parents: Vec<ObjectId> = Vec::new();
-    for branch in repo.branches()? {
-        parents.push(branch?.head);
-    }
 
-    let revwalk = repo.metadata_iter(&parents)?;
+    let revwalk = repo.metadata_iter(heads)?;
     for metadata in revwalk {
         graph_builder
             .process_commit(metadata)

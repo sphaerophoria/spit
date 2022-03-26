@@ -2,13 +2,13 @@ use crate::{
     app::{AppEvent, AppRequest},
     git::{
         graph::{Edge, GraphPoint},
-        Commit, HistoryGraph, ObjectId,
+        Branch, Commit, HistoryGraph, ObjectId,
     },
 };
 
 use anyhow::{Context, Result};
 use eframe::{
-    egui::{self, Pos2, Rect, Response, Sense, TextEdit, TextStyle, Ui, Widget},
+    egui::{self, Pos2, Rect, Response, ScrollArea, Sense, TextEdit, TextStyle, Ui, Widget},
     epi,
 };
 use log::{debug, error};
@@ -17,39 +17,38 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Range,
     path::PathBuf,
-    sync::mpsc::{Receiver, Sender},
+    sync::{
+        mpsc::{Receiver, Sender},
+        Arc, Mutex,
+    },
 };
 
-pub struct Gui {
+struct GuiInner {
     tx: Sender<AppRequest>,
-    rx: Receiver<AppEvent>,
-
     output: Vec<String>,
     git_command: String,
     commit_graph: Option<HistoryGraph>,
     show_console: bool,
     outgoing_requests: HashSet<ObjectId>,
+    branches: Vec<Branch>,
+    selected_branches: Vec<usize>,
     cached_commits: HashMap<ObjectId, Commit>,
     cached_commit_order: VecDeque<ObjectId>,
     selected_commit: Option<ObjectId>,
 }
 
-impl Gui {
+impl GuiInner {
     const MAX_CACHED_COMMITS: usize = 1000;
 
-    pub fn new(tx: Sender<AppRequest>, rx: Receiver<AppEvent>) -> Gui {
-        Gui {
-            tx,
-            rx,
-            output: Vec::new(),
-            git_command: String::new(),
-            commit_graph: None,
-            show_console: false,
-            outgoing_requests: HashSet::new(),
-            cached_commits: HashMap::new(),
-            cached_commit_order: VecDeque::new(),
-            selected_commit: None,
-        }
+    fn reset(&mut self) {
+        self.git_command = String::new();
+        self.commit_graph = None;
+        self.outgoing_requests = HashSet::new();
+        self.branches = Vec::new();
+        self.cached_commits = HashMap::new();
+        self.cached_commit_order = VecDeque::new();
+        self.selected_commit = None;
+        self.selected_branches = Vec::new();
     }
 
     fn handle_event(&mut self, response: AppEvent) {
@@ -78,6 +77,10 @@ impl Gui {
                 self.cached_commits
                     .insert(commit.metadata.id.clone(), commit);
             }
+            AppEvent::BranchesUpdated(branches) => {
+                self.branches = branches;
+                self.selected_branches = vec![0];
+            }
             AppEvent::Error(e) => {
                 // FIXME: Proper error text
                 self.output.push(e);
@@ -89,29 +92,106 @@ impl Gui {
         }
     }
 
-    fn process_events(&mut self) -> bool {
-        let mut event_processed = false;
-        while let Ok(response) = self.rx.try_recv() {
-            self.handle_event(response);
-            event_processed = true;
-        }
-        event_processed
-    }
-
     fn open_repo(&mut self, repo: PathBuf) {
         self.reset();
         self.tx.send(AppRequest::OpenRepo(repo))
             .expect("App handle invalid");
     }
 
-    fn reset(&mut self) {
-        self.git_command = String::new();
-        self.commit_graph = None;
-        self.outgoing_requests = HashSet::new();
-        self.cached_commits = HashMap::new();
-        self.cached_commit_order = VecDeque::new();
-        self.selected_commit = None;
+    fn update(&mut self, ctx: &egui::Context) -> Result<()> {
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            if let Some(repo) = render_toolbar(ui, &mut self.show_console) {
+                self.open_repo(repo);
+            }
+        });
+
+        if self.show_console {
+            let send_git_command = egui::TopBottomPanel::bottom("output").show(ctx, |ui| {
+                render_console(ui, &self.output, &mut self.git_command)
+            }).inner;
+
+            if send_git_command {
+                let cmd = std::mem::take(&mut self.git_command);
+                self.tx.send(AppRequest::ExecuteGitCommand(cmd))
+                    .expect("Failed to request git command");
+            }
+        }
+
+        egui::TopBottomPanel::bottom("commit_view_panel")
+            .default_height(150.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                render_commit_view(ui, &self.cached_commits, self.selected_commit.as_ref());
+            });
+
+        let selected_branches = egui::SidePanel::right("sidebar")
+            .resizable(true)
+            .show(ctx, |ui| {
+                render_side_panel(ui, &self.branches, &self.selected_branches)
+            })
+            .inner;
+
+        if self.selected_branches != selected_branches {
+            self.selected_branches = selected_branches;
+            let selected_branches = self.selected_branches.iter().map(|idx| self.branches[*idx].clone()).collect();
+            self.tx.send(AppRequest::SelectBranches(selected_branches))
+                .expect("Failed to request branch selection");
+        };
+
+        let missing_commits = egui::CentralPanel::default()
+            .show(ctx, |ui| -> Vec<ObjectId> {
+                commit_log::render(
+                    ui,
+                    &self.commit_graph,
+                    &self.cached_commits,
+                    &mut self.selected_commit,
+                )
+            })
+            .inner;
+
+        for id in missing_commits {
+            if !self.outgoing_requests.contains(&id) {
+                debug!("Requesting commit {}", id);
+
+                self.tx
+                    .send(AppRequest::GetCommit(id.clone()))
+                    .context("Failed to request commit")?;
+
+                self.outgoing_requests.insert(id);
+            }
+        }
+
+        Ok(())
     }
+}
+
+pub struct Gui {
+    rx: Option<Receiver<AppEvent>>,
+    inner: Arc<Mutex<GuiInner>>,
+}
+
+impl Gui {
+    pub fn new(tx: Sender<AppRequest>, rx: Receiver<AppEvent>) -> Gui {
+        let inner = GuiInner {
+            tx,
+            output: Vec::new(),
+            git_command: String::new(),
+            commit_graph: None,
+            show_console: false,
+            outgoing_requests: HashSet::new(),
+            branches: Vec::new(),
+            selected_branches: Vec::new(),
+            cached_commits: HashMap::new(),
+            cached_commit_order: VecDeque::new(),
+            selected_commit: None,
+        };
+
+        Gui {
+            rx: Some(rx),
+            inner: Arc::new(Mutex::new(inner)),
+        }
+    }
+
 }
 
 impl epi::App for Gui {
@@ -119,62 +199,23 @@ impl epi::App for Gui {
         "Git"
     }
 
+    fn setup(&mut self, _ctx: &egui::Context, frame: &epi::Frame, _storage: Option<&dyn epi::Storage>) {
+        // We need to spawn a thread to process events
+        let inner = Arc::clone(&self.inner);
+        let frame = frame.clone();
+        let rx = std::mem::take(&mut self.rx).expect("Setup called with uninitialized rx");
+        std::thread::spawn(move || {
+            while let Ok(response) = rx.recv() {
+                let mut inner = inner.lock().unwrap();
+                inner.handle_event(response);
+                frame.request_repaint();
+            }
+        });
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &epi::Frame) {
-        let res = (|| -> Result<()> {
-            if self.process_events() {
-                ctx.request_repaint();
-            }
-
-            egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-                if let Some(repo) = render_toolbar(ui, &mut self.show_console) {
-                    self.open_repo(repo);
-                }
-            });
-
-            if self.show_console {
-                let send_git_command = egui::TopBottomPanel::bottom("output").show(ctx, |ui| {
-                    render_console(ui, &self.output, &mut self.git_command)
-                }).inner;
-
-                if send_git_command {
-                    let cmd = std::mem::take(&mut self.git_command);
-                    self.tx.send(AppRequest::ExecuteGitCommand(cmd))
-                        .expect("Failed to request git command");
-                }
-            }
-
-            egui::TopBottomPanel::bottom("commit_view_panel")
-                .default_height(150.0)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    render_commit_view(ui, &self.cached_commits, self.selected_commit.as_ref());
-                });
-
-            let missing_commits = egui::CentralPanel::default()
-                .show(ctx, |ui| -> Vec<ObjectId> {
-                    commit_log::render(
-                        ui,
-                        &self.commit_graph,
-                        &self.cached_commits,
-                        &mut self.selected_commit,
-                    )
-                })
-                .inner;
-
-            for id in missing_commits {
-                if !self.outgoing_requests.contains(&id) {
-                    debug!("Requesting commit {}", id);
-
-                    self.tx
-                        .send(AppRequest::GetCommit(id.clone()))
-                        .context("Failed to request commit")?;
-
-                    self.outgoing_requests.insert(id);
-                }
-            }
-
-            Ok(())
-        })();
+        let mut inner = self.inner.lock().unwrap();
+        let res = inner.update(ctx);
 
         if let Err(e) = res {
             // FIXME: Ratelimit
@@ -256,6 +297,27 @@ fn render_console(
         .ui(ui);
 
     response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
+}
+
+fn render_side_panel(
+    ui: &mut Ui,
+    branches: &[Branch],
+    selected_branches: &[usize]) -> Vec<usize> {
+
+    let mut ret = Vec::new();
+    ScrollArea::vertical()
+        .auto_shrink([true, false])
+        .show(ui, |ui| {
+            for (idx, branch) in branches.iter().enumerate() {
+                let mut selected = selected_branches.contains(&idx);
+                ui.checkbox(&mut selected, &branch.name);
+                if selected {
+                    ret.push(idx);
+                }
+            }
+        });
+
+    ret
 }
 
 mod commit_log {
@@ -408,8 +470,22 @@ mod commit_log {
                 let mut missing = Vec::new();
 
                 let max_edge_x = render_edges(ui, &commit_graph.edges, &converter, &row_range);
+                let text_rect = converter.text_rect(max_edge_x);
                 let mut text_ui =
-                    ui.child_ui(converter.text_rect(max_edge_x), egui::Layout::default());
+                    ui.child_ui(text_rect, egui::Layout::default());
+
+                // I'm unsure that this is right, however both Ui::max_rect and Ui::clip_rect are
+                // not small enough
+                let clip_rect = ui.clip_rect();
+                text_ui.set_clip_rect(Rect::from_min_max(
+                        Pos2::new(
+                            f32::max(clip_rect.left(), text_rect.left()),
+                            f32::max(clip_rect.top(), text_rect.top()),
+                            ),
+                        Pos2::new(
+                            f32::min(clip_rect.right(), text_rect.right()),
+                            f32::min(clip_rect.bottom(), text_rect.bottom()),
+                    )));
 
                 for node in &commit_graph.nodes[row_range] {
                     render_commit_node(ui, &node.position, &converter);

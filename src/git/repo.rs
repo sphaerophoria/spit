@@ -136,18 +136,18 @@ impl Repo {
     ) -> Result<impl Iterator<Item = &CommitMetadata>> {
         // FIXME: Fall back on libgit2 on failure
 
-        let child_indices = self.build_reverse_dag(heads)?;
+        let (walked_indices, child_indices) = self.build_reverse_dag(heads)?;
 
         // NOTE: From this point on it's guaranteed that all parents of heads are in our
         // metadata_storage, so from this point on it's safe for us to use the metadata storage
         // directly
 
-        build_sorted_metadata_indicies(child_indices, &self.metadata_lookup, &self.metadata_storage)
+        build_sorted_metadata_indicies(&walked_indices, child_indices, &self.metadata_lookup, &self.metadata_storage)
     }
 
     /// Build the reversed dag for the given heads. The output is a Vec of Vecs that represents the
     /// child indices for each metadata_storage index
-    fn build_reverse_dag(&mut self, heads: &[ObjectId]) -> Result<Vec<Vec<usize>>> {
+    fn build_reverse_dag(&mut self, heads: &[ObjectId]) -> Result<(HashSet<usize>, Vec<Vec<usize>>)> {
         let timer = Timer::new();
 
         let mut to_walk = heads
@@ -190,7 +190,7 @@ impl Repo {
             timer.elapsed().as_secs_f32()
         );
 
-        Ok(child_indices)
+        Ok((walked, child_indices))
     }
 
     pub(crate) fn branches(&self) -> Result<impl Iterator<Item = Result<Branch>> + '_> {
@@ -212,9 +212,18 @@ impl Repo {
     pub(crate) fn git_dir(&self) -> &Path {
         &self.git_dir
     }
+
+    pub(crate) fn head(&self) -> Result<ObjectId> {
+        Ok(self.git2_repo.head()?
+            .resolve()?
+            .target()
+            .ok_or_else(|| Error::msg("Failed to resolve head reference"))?
+            .into())
+    }
 }
 
 fn build_sorted_metadata_indicies<'a>(
+    walked_indices: &HashSet<usize>,
     mut child_indices: Vec<Vec<usize>>,
     index_lookup: &HashMap<ObjectId, usize>,
     storage: &'a [CommitMetadata],
@@ -225,7 +234,7 @@ fn build_sorted_metadata_indicies<'a>(
 
     let mut timer = Timer::new();
 
-    let mut no_child_options = get_childless_indices(&child_indices);
+    let mut no_child_options = get_childless_indices(walked_indices, &child_indices);
     sort_commit_metadata_indices_by_timestamp(&mut no_child_options, storage);
     debug!(
         "Filtering childless indices took: {}",
@@ -276,12 +285,12 @@ fn sort_commit_metadata_indices_by_timestamp(indices: &mut [usize], storage: &[C
 }
 
 /// Find the indices in child_indices where there are no children
-fn get_childless_indices(child_indices: &[Vec<usize>]) -> Vec<usize> {
+fn get_childless_indices(walked_indices: &HashSet<usize>, child_indices: &[Vec<usize>]) -> Vec<usize> {
     child_indices
         .iter()
         .enumerate()
         .filter_map(|(idx, child_indices)| {
-            if child_indices.is_empty() {
+            if child_indices.is_empty() && walked_indices.contains(&idx) {
                 Some(idx)
             } else {
                 None
