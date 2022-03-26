@@ -1,11 +1,19 @@
 use personal_git_gui::{app::App, gui::Gui};
 
-use std::sync::mpsc::{self};
+use std::{env, path::PathBuf, sync::mpsc};
 
 fn main() {
     env_logger::init();
     let (app_tx, gui_rx) = mpsc::channel();
     let (gui_tx, app_rx) = mpsc::channel();
+
+    if let Some(repo) = env::args().nth(1) {
+        gui_tx
+            .send(personal_git_gui::app::AppRequest::OpenRepo(PathBuf::from(
+                repo,
+            )))
+            .expect("Gui TX did not initialize correctly");
+    };
 
     let gui = Gui::new(gui_tx, gui_rx);
     let native_options = eframe::NativeOptions::default();
