@@ -1,11 +1,14 @@
 use crate::{
     app::{AppEvent, AppRequest},
-    git::{Commit, HistoryGraph, ObjectId},
+    git::{
+        graph::{Edge, GraphPoint},
+        Commit, HistoryGraph, ObjectId,
+    },
 };
 
 use anyhow::{Context, Result};
 use eframe::{
-    egui::{self, Pos2, Sense, TextEdit, TextStyle, Widget},
+    egui::{self, Pos2, Rect, Response, Sense, TextEdit, TextStyle, Ui, Widget},
     epi,
 };
 use log::{debug, error};
@@ -13,6 +16,7 @@ use log::{debug, error};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Range,
+    path::PathBuf,
     sync::mpsc::{Receiver, Sender},
 };
 
@@ -93,6 +97,21 @@ impl Gui {
         }
         event_processed
     }
+
+    fn open_repo(&mut self, repo: PathBuf) {
+        self.reset();
+        self.tx.send(AppRequest::OpenRepo(repo))
+            .expect("App handle invalid");
+    }
+
+    fn reset(&mut self) {
+        self.git_command = String::new();
+        self.commit_graph = None;
+        self.outgoing_requests = HashSet::new();
+        self.cached_commits = HashMap::new();
+        self.cached_commit_order = VecDeque::new();
+        self.selected_commit = None;
+    }
 }
 
 impl epi::App for Gui {
@@ -107,73 +126,38 @@ impl epi::App for Gui {
             }
 
             egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-                render_toolbar(ui, &self.tx, &mut self.show_console);
+                if let Some(repo) = render_toolbar(ui, &mut self.show_console) {
+                    self.open_repo(repo);
+                }
             });
 
             if self.show_console {
-                egui::TopBottomPanel::bottom("output").show(ctx, |ui| {
-                    render_console(ui, &self.output, &self.tx, &mut self.git_command)
-                });
+                let send_git_command = egui::TopBottomPanel::bottom("output").show(ctx, |ui| {
+                    render_console(ui, &self.output, &mut self.git_command)
+                }).inner;
+
+                if send_git_command {
+                    let cmd = std::mem::take(&mut self.git_command);
+                    self.tx.send(AppRequest::ExecuteGitCommand(cmd))
+                        .expect("Failed to request git command");
+                }
             }
 
             egui::TopBottomPanel::bottom("commit_view_panel")
                 .default_height(150.0)
                 .resizable(true)
                 .show(ctx, |ui| {
-                    let message = self
-                        .selected_commit
-                        .as_ref()
-                        .and_then(|id| self.cached_commits.get(id))
-                        .map(|commit| {
-                            format!("id: {}\n\
-                                    author: {}\n\
-                                    timestamp: {}\n\
-                                    \n\
-                                    {}",
-                                    commit.metadata.id,
-                                    commit.author,
-                                    commit.metadata.timestamp,
-                                    commit.message)
-                        })
-                        .unwrap_or_else(String::new);
-
-                    egui::ScrollArea::vertical()
-                        .max_height(f32::INFINITY)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            TextEdit::multiline(&mut message.as_str())
-                                .font(TextStyle::Monospace)
-                                .desired_width(ui.available_width())
-                                .ui(ui);
-                        });
+                    render_commit_view(ui, &self.cached_commits, self.selected_commit.as_ref());
                 });
 
             let missing_commits = egui::CentralPanel::default()
                 .show(ctx, |ui| -> Vec<ObjectId> {
-                    let text_style = egui::TextStyle::Body;
-                    let row_height = ui.text_style_height(&text_style);
-                    let commit_graph = match self.commit_graph.as_ref() {
-                        Some(v) => v,
-                        None => return Vec::new(),
-                    };
-
-                    if commit_graph.nodes.is_empty() {
-                        return Vec::new();
-                    }
-
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show_rows(ui, row_height, commit_graph.nodes.len(), |ui, row_range| {
-                            render_commit_log(
-                                ui,
-                                row_range,
-                                row_height,
-                                commit_graph,
-                                &self.cached_commits,
-                                &mut self.selected_commit,
-                            )
-                        })
-                        .inner
+                    commit_log::render(
+                        ui,
+                        &self.commit_graph,
+                        &self.cached_commits,
+                        &mut self.selected_commit,
+                    )
                 })
                 .inner;
 
@@ -199,15 +183,43 @@ impl epi::App for Gui {
     }
 }
 
-fn render_toolbar(ui: &mut egui::Ui, tx: &Sender<AppRequest>, show_console: &mut bool) {
+fn render_commit_view(ui: &mut Ui, cached_commits: &HashMap<ObjectId, Commit>, selected_commit: Option<&ObjectId>) {
+    let message = selected_commit
+        .and_then(|id| cached_commits.get(id))
+        .map(|commit| {
+            format!(
+                "id: {}\n\
+                    author: {}\n\
+                    timestamp: {}\n\
+                    \n\
+                    {}",
+                commit.metadata.id,
+                commit.author,
+                commit.metadata.timestamp,
+                commit.message
+            )
+        })
+        .unwrap_or_else(String::new);
+
+    egui::ScrollArea::vertical()
+        .max_height(f32::INFINITY)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            TextEdit::multiline(&mut message.as_str())
+                .font(TextStyle::Monospace)
+                .desired_width(ui.available_width())
+                .ui(ui);
+        });
+
+}
+
+fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf> {
+    let mut ret = None;
     ui.horizontal(|ui| {
         let response = ui.button("Open repo");
         if response.clicked() {
             let repo = rfd::FileDialog::new().pick_folder();
-            if let Some(repo) = repo {
-                tx.send(AppRequest::OpenRepo(repo))
-                    .expect("Failed to issue request to open repo");
-            }
+            ret = repo;
         }
 
         let button_text = if *show_console {
@@ -221,14 +233,14 @@ fn render_toolbar(ui: &mut egui::Ui, tx: &Sender<AppRequest>, show_console: &mut
             *show_console = !*show_console;
         }
     });
+    ret
 }
 
 fn render_console(
     ui: &mut egui::Ui,
     output: &[String],
-    tx: &Sender<AppRequest>,
     git_command: &mut String,
-) {
+) -> bool {
     egui::ScrollArea::vertical()
         .stick_to_bottom()
         .auto_shrink([false, true])
@@ -243,121 +255,186 @@ fn render_console(
         .font(egui::TextStyle::Monospace)
         .ui(ui);
 
-    if response.has_focus() && ui.input().key_pressed(egui::Key::Enter) {
-        let cmd = std::mem::take(git_command);
-        tx.send(AppRequest::ExecuteGitCommand(cmd))
-            .expect("Failed to request git command");
-    }
+    response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
 }
 
-fn render_commit_log(
-    ui: &mut egui::Ui,
-    row_range: Range<usize>,
-    row_height: f32,
-    commit_graph: &HistoryGraph,
-    commit_lookup: &HashMap<ObjectId, Commit>,
-    selected_commit: &mut Option<ObjectId>,
-) -> Vec<ObjectId> {
-    let mut missing = Vec::new();
+mod commit_log {
+    use super::*;
 
-    let stroke = ui.style().visuals.widgets.open.fg_stroke;
-    const X_MULTIPLIER: f32 = 10.0;
-    let x_offset = 10.0;
-
-    let mut max_edge_x = 0;
-    let edge_end_idx = match commit_graph
-        .edges
-        .binary_search_by(|elem| (elem.a.y as usize).cmp(&row_range.end))
-    {
-        Ok(v) => v,
-        Err(v) => v,
-    };
-
-    let y_spacing = ui.style().spacing.item_spacing.y;
-
-    let x_idx_to_x_pos = |idx| idx as f32 * X_MULTIPLIER + x_offset;
-    let y_idx_to_y_pos = |idx| idx as f32 * (row_height + y_spacing) + row_height / 2.0;
-    for edge in &commit_graph.edges[..edge_end_idx] {
-        // FIXME: as usize
-        // FIXME: Filtering every frame is expensive
-        if (edge.b.y as usize) < row_range.start || (edge.a.y as usize) > row_range.end {
-            continue;
-        }
-
-        let a = Pos2 {
-            x: x_idx_to_x_pos(edge.a.x),
-            y: y_idx_to_y_pos(edge.a.y as f32 - row_range.start as f32),
-        };
-        let b = Pos2 {
-            x: x_idx_to_x_pos(edge.b.x),
-            y: y_idx_to_y_pos(edge.b.y as f32 - row_range.start as f32),
-        };
-        ui.painter().line_segment([a, b], stroke);
-        let edge_end = i32::max(edge.a.x, edge.b.x);
-        max_edge_x = i32::max(edge_end, max_edge_x);
+    /// Helper struct for calculating where ui elements should be drawn
+    struct PositionConverter {
+        row_height: f32,
+        spacing: egui::Vec2,
+        max_rect: Rect,
+        scroll_range: Range<usize>,
     }
 
-    let text_rect = egui::Rect::from_min_max(
-        Pos2::new(
-            x_idx_to_x_pos(max_edge_x) + ui.spacing().item_spacing.x,
-            0.0,
-        ),
-        Pos2::new(ui.available_width(), ui.available_height()),
-    );
-    let mut text_ui = ui.child_ui(text_rect, egui::Layout::default());
-
-    for (idx, node) in commit_graph.nodes[row_range].iter().enumerate() {
-        let node_pos = Pos2 {
-            x: x_idx_to_x_pos(node.position.x),
-            y: y_idx_to_y_pos(idx as f32),
-        };
-        ui.painter().circle_filled(node_pos, 3.0, stroke.color);
-
-        let message = match commit_lookup.get(&node.id) {
-            Some(v) => v
-                .message
-                .split('\n')
-                .next()
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| v.message.clone()),
-            None => {
-                missing.push(node.id.clone());
-                node.id.to_string()
+    impl PositionConverter {
+        fn new(ui: &Ui, row_height: f32, scroll_range: Range<usize>) -> PositionConverter {
+            let max_rect = ui.max_rect();
+            let spacing = ui.style().spacing.item_spacing;
+            PositionConverter {
+                row_height,
+                spacing,
+                max_rect,
+                scroll_range,
             }
-        };
-
-        // Would be nice to use SeletableLable, but I couldn't find a way to prevent it from
-        // wrapping
-        let (pos, galley, message_response) = egui::Label::new(&message)
-            .wrap(false)
-            .sense(Sense::click())
-            .layout_in_ui(&mut text_ui);
-
-        if message_response.clicked() {
-            *selected_commit = Some(node.id.clone());
         }
 
-        if selected_commit.as_ref() == Some(&node.id) {
-            let visuals = text_ui.style().interact_selectable(&message_response, true);
-            text_ui.painter().rect(
+        fn graph_x_to_ui_x(&self, graph_x: i32) -> f32 {
+            const X_MULTIPLIER: f32 = 10.0;
+            graph_x as f32 * X_MULTIPLIER + self.max_rect.left() + self.spacing.x
+        }
+
+        fn graph_y_to_ui_y(&self, graph_y: i32) -> f32 {
+            (graph_y - self.scroll_range.start as i32) as f32 * (self.row_height + self.spacing.y)
+                + self.row_height / 2.0
+                + self.max_rect.top()
+        }
+
+        fn text_rect(&self, max_x_pos: i32) -> Rect {
+            egui::Rect::from_min_max(
+                Pos2::new(
+                    self.graph_x_to_ui_x(max_x_pos) + self.spacing.x,
+                    self.max_rect.top(),
+                ),
+                Pos2::new(self.max_rect.right(), self.max_rect.bottom()),
+            )
+        }
+    }
+
+    fn render_edges(
+        ui: &mut Ui,
+        edges: &[Edge],
+        converter: &PositionConverter,
+        row_range: &Range<usize>,
+    ) -> i32 {
+        let stroke = ui.style().visuals.widgets.open.fg_stroke;
+
+        let mut max_edge_x = 0;
+        let edge_end_idx =
+            match edges.binary_search_by(|elem| (elem.a.y as usize).cmp(&row_range.end)) {
+                Ok(v) => v,
+                Err(v) => v,
+            };
+
+        for edge in &edges[..edge_end_idx] {
+            // FIXME: as usize
+            // FIXME: Filtering every frame is expensive
+            if (edge.b.y as usize) < row_range.start || (edge.a.y as usize) > row_range.end {
+                continue;
+            }
+
+            let a = Pos2 {
+                x: converter.graph_x_to_ui_x(edge.a.x),
+                y: converter.graph_y_to_ui_y(edge.a.y),
+            };
+            let b = Pos2 {
+                x: converter.graph_x_to_ui_x(edge.b.x),
+                y: converter.graph_y_to_ui_y(edge.b.y),
+            };
+            ui.painter().line_segment([a, b], stroke);
+            let edge_end = i32::max(edge.a.x, edge.b.x);
+            max_edge_x = i32::max(edge_end, max_edge_x);
+        }
+
+        max_edge_x
+    }
+
+    fn render_commit_message(ui: &mut Ui, message: &str, selected: bool) -> Response {
+        // Would be nice to use SeletableLable, but I couldn't find a way to prevent it from
+        // wrapping
+        let (pos, galley, message_response) = egui::Label::new(message)
+            .wrap(false)
+            .sense(Sense::click())
+            .layout_in_ui(ui);
+
+        if selected {
+            let visuals = ui.style().interact_selectable(&message_response, true);
+            ui.painter().rect(
                 message_response.rect,
                 visuals.rounding,
                 visuals.bg_fill,
                 visuals.bg_stroke,
             );
         } else {
-            let visuals = text_ui
-                .style()
-                .interact_selectable(&message_response, false);
-            text_ui.painter().rect_stroke(
-                message_response.rect,
-                visuals.rounding,
-                visuals.bg_stroke,
-            );
+            let visuals = ui.style().interact_selectable(&message_response, false);
+            ui.painter()
+                .rect_stroke(message_response.rect, visuals.rounding, visuals.bg_stroke);
         }
 
-        galley.paint_with_visuals(text_ui.painter(), pos, text_ui.visuals().noninteractive());
+        galley.paint_with_visuals(ui.painter(), pos, ui.visuals().noninteractive());
+
+        message_response
     }
 
-    missing
+    fn render_commit_node(ui: &mut Ui, node_pos: &GraphPoint, converter: &PositionConverter) {
+        let stroke = ui.style().visuals.widgets.open.fg_stroke;
+        let node_pos = Pos2 {
+            x: converter.graph_x_to_ui_x(node_pos.x),
+            y: converter.graph_y_to_ui_y(node_pos.y),
+        };
+        ui.painter().circle_filled(node_pos, 3.0, stroke.color);
+    }
+
+    pub(super) fn render(
+        ui: &mut Ui,
+        commit_graph: &Option<HistoryGraph>,
+        commit_lookup: &HashMap<ObjectId, Commit>,
+        selected_commit: &mut Option<ObjectId>,
+    ) -> Vec<ObjectId> {
+        let commit_graph = match commit_graph.as_ref() {
+            Some(v) => v,
+            None => return Vec::new(),
+        };
+
+        if commit_graph.nodes.is_empty() {
+            return Vec::new();
+        }
+
+        let text_style = egui::TextStyle::Body;
+        let row_height = ui.text_style_height(&text_style);
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show_rows(ui, row_height, commit_graph.nodes.len(), |ui, row_range| {
+                if row_range.end > commit_graph.nodes.len() || row_range.start > commit_graph.nodes.len() {
+                    ui.scroll_to_cursor(None);
+                    return Vec::new();
+                }
+
+                let converter = PositionConverter::new(ui, row_height, row_range.clone());
+
+                let mut missing = Vec::new();
+
+                let max_edge_x = render_edges(ui, &commit_graph.edges, &converter, &row_range);
+                let mut text_ui =
+                    ui.child_ui(converter.text_rect(max_edge_x), egui::Layout::default());
+
+                for node in &commit_graph.nodes[row_range] {
+                    render_commit_node(ui, &node.position, &converter);
+
+                    let message = match commit_lookup.get(&node.id) {
+                        Some(v) => v
+                            .message
+                            .split('\n')
+                            .next()
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| v.message.clone()),
+                        None => {
+                            missing.push(node.id.clone());
+                            node.id.to_string()
+                        }
+                    };
+
+                    let selected = selected_commit.as_ref() == Some(&node.id);
+                    if render_commit_message(&mut text_ui, &message, selected).clicked() {
+                        *selected_commit = Some(node.id.clone());
+                    }
+                }
+
+                missing
+            })
+            .inner
+    }
 }

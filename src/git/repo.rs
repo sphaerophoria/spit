@@ -75,7 +75,7 @@ impl Repo {
         Ok(Commit {
             metadata: metadata.clone(),
             message,
-            author
+            author,
         })
     }
 

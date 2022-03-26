@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 mod decompress;
-mod graph;
+pub(crate) mod graph;
 mod object_id;
 mod pack;
 mod repo;
