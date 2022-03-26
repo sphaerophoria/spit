@@ -6,8 +6,6 @@ mod object_id;
 mod pack;
 mod repo;
 
-pub mod proto;
-
 pub(crate) use graph::{build_git_history_graph, HistoryGraph};
 pub(crate) use object_id::ObjectId;
 pub(crate) use repo::Repo;
