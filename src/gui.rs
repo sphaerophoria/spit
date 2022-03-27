@@ -199,7 +199,7 @@ impl Gui {
 
 impl epi::App for Gui {
     fn name(&self) -> &str {
-        "Git"
+        "Spit"
     }
 
     fn setup(&mut self, _ctx: &egui::Context, frame: &epi::Frame, _storage: Option<&dyn epi::Storage>) {

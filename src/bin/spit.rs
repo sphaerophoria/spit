@@ -1,4 +1,4 @@
-use personal_git_gui::{app::App, gui::Gui};
+use spit::{app::App, gui::Gui};
 
 use std::{env, path::PathBuf, sync::mpsc};
 
@@ -9,7 +9,7 @@ fn main() {
 
     if let Some(repo) = env::args().nth(1) {
         gui_tx
-            .send(personal_git_gui::app::AppRequest::OpenRepo(PathBuf::from(
+            .send(spit::app::AppRequest::OpenRepo(PathBuf::from(
                 repo,
             )))
             .expect("Gui TX did not initialize correctly");

@@ -1,4 +1,4 @@
-# Personal git gui (name TBD)
+# spit (sphaerophoria's git)
 
 I've tried a lot of git guis, and none of them have behaved the way I want. I
 can't really put a good finger on it, but it feels like I want a different set

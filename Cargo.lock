@@ -1706,24 +1706,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4fd5641d01c8f18a23da7b6fe29298ff4b55afcccdf78973b24cf3175fee32e"
 
 [[package]]
-name = "personal_git_gui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "eframe",
- "env_logger",
- "faster-hex",
- "flate2",
- "git2",
- "log",
- "memmap2 0.5.3",
- "rfd",
- "tar",
- "tempfile",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2051,6 +2033,24 @@ checksum = "66d72b759436ae32898a2af0a14218dbf55efde3feeb170eb623637db85ee1e0"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "spit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "eframe",
+ "env_logger",
+ "faster-hex",
+ "flate2",
+ "git2",
+ "log",
+ "memmap2 0.5.3",
+ "rfd",
+ "tar",
+ "tempfile",
 ]
 
 [[package]]
