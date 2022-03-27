@@ -266,6 +266,12 @@ mod tests {
     use anyhow::Result;
     use tempfile::TempDir;
 
+    fn get_all_heads(repo: &Repo) -> Result<Vec<ObjectId>> {
+        repo.branches()?
+            .map(|b| Ok(b?.head))
+            .collect::<Result<Vec<ObjectId>>>()
+    }
+
     fn find_edge(x1: i32, y1: i32, x2: i32, y2: i32, edges: &[Edge]) -> bool {
         edges
             .iter()
@@ -285,7 +291,8 @@ mod tests {
             .unwrap();
 
         let mut repo = Repo::new(tmp_dir.path())?;
-        let graph = build_git_history_graph(&mut repo)?;
+        let all_heads = get_all_heads(&repo)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads)?;
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 0);
@@ -312,7 +319,8 @@ mod tests {
             .unwrap();
 
         let mut repo = Repo::new(tmp_dir.path())?;
-        let graph = build_git_history_graph(&mut repo)?;
+        let all_heads = get_all_heads(&repo)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads)?;
         assert_eq!(graph.nodes.len(), 4);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 1);
@@ -340,7 +348,8 @@ mod tests {
             .unwrap();
 
         let mut repo = Repo::new(tmp_dir.path())?;
-        let graph = build_git_history_graph(&mut repo)?;
+        let all_heads = get_all_heads(&repo)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads)?;
         assert_eq!(graph.nodes.len(), 4);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 0);
@@ -369,7 +378,8 @@ mod tests {
             .unwrap();
 
         let mut repo = Repo::new(tmp_dir.path())?;
-        let graph = build_git_history_graph(&mut repo)?;
+        let all_heads = get_all_heads(&repo)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads)?;
         assert_eq!(graph.nodes.len(), 6);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 1);
