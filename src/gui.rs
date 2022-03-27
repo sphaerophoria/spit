@@ -110,7 +110,8 @@ impl GuiInner {
 
     fn open_repo(&mut self, repo: PathBuf) {
         self.reset();
-        self.tx.send(AppRequest::OpenRepo(repo))
+        self.tx
+            .send(AppRequest::OpenRepo(repo))
             .expect("App handle invalid");
     }
 
@@ -122,13 +123,16 @@ impl GuiInner {
         });
 
         if self.show_console {
-            let send_git_command = egui::TopBottomPanel::bottom("output").show(ctx, |ui| {
-                render_console(ui, &self.output, &mut self.git_command)
-            }).inner;
+            let send_git_command = egui::TopBottomPanel::bottom("output")
+                .show(ctx, |ui| {
+                    render_console(ui, &self.output, &mut self.git_command)
+                })
+                .inner;
 
             if send_git_command {
                 let cmd = std::mem::take(&mut self.git_command);
-                self.tx.send(AppRequest::ExecuteGitCommand(cmd))
+                self.tx
+                    .send(AppRequest::ExecuteGitCommand(cmd))
                     .expect("Failed to request git command");
             }
         }
@@ -149,8 +153,13 @@ impl GuiInner {
 
         if self.selected_branches != selected_branches {
             self.selected_branches = selected_branches;
-            let selected_branches = self.selected_branches.iter().map(|idx| self.branches[*idx].clone()).collect();
-            self.tx.send(AppRequest::SelectBranches(selected_branches))
+            let selected_branches = self
+                .selected_branches
+                .iter()
+                .map(|idx| self.branches[*idx].clone())
+                .collect();
+            self.tx
+                .send(AppRequest::SelectBranches(selected_branches))
                 .expect("Failed to request branch selection");
         };
 
@@ -194,7 +203,6 @@ impl Gui {
             inner: Arc::new(Mutex::new(inner)),
         }
     }
-
 }
 
 impl epi::App for Gui {
@@ -202,7 +210,12 @@ impl epi::App for Gui {
         "Spit"
     }
 
-    fn setup(&mut self, _ctx: &egui::Context, frame: &epi::Frame, _storage: Option<&dyn epi::Storage>) {
+    fn setup(
+        &mut self,
+        _ctx: &egui::Context,
+        frame: &epi::Frame,
+        _storage: Option<&dyn epi::Storage>,
+    ) {
         // We need to spawn a thread to process events
         let inner = Arc::clone(&self.inner);
         let frame = frame.clone();
@@ -227,7 +240,11 @@ impl epi::App for Gui {
     }
 }
 
-fn render_commit_view(ui: &mut Ui, cached_commits: &HashMap<ObjectId, Commit>, selected_commit: Option<&ObjectId>) {
+fn render_commit_view(
+    ui: &mut Ui,
+    cached_commits: &HashMap<ObjectId, Commit>,
+    selected_commit: Option<&ObjectId>,
+) {
     let message = selected_commit
         .and_then(|id| cached_commits.get(id))
         .map(|commit| {
@@ -237,10 +254,7 @@ fn render_commit_view(ui: &mut Ui, cached_commits: &HashMap<ObjectId, Commit>, s
                     timestamp: {}\n\
                     \n\
                     {}",
-                commit.metadata.id,
-                commit.author,
-                commit.metadata.timestamp,
-                commit.message
+                commit.metadata.id, commit.author, commit.metadata.timestamp, commit.message
             )
         })
         .unwrap_or_else(String::new);
@@ -254,7 +268,6 @@ fn render_commit_view(ui: &mut Ui, cached_commits: &HashMap<ObjectId, Commit>, s
                 .desired_width(ui.available_width())
                 .ui(ui);
         });
-
 }
 
 fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf> {
@@ -280,11 +293,7 @@ fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf>
     ret
 }
 
-fn render_console(
-    ui: &mut egui::Ui,
-    output: &[String],
-    git_command: &mut String,
-) -> bool {
+fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String) -> bool {
     egui::ScrollArea::vertical()
         .stick_to_bottom()
         .auto_shrink([false, true])
@@ -302,11 +311,7 @@ fn render_console(
     response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
 }
 
-fn render_side_panel(
-    ui: &mut Ui,
-    branches: &[Branch],
-    selected_branches: &[usize]) -> Vec<usize> {
-
+fn render_side_panel(ui: &mut Ui, branches: &[Branch], selected_branches: &[usize]) -> Vec<usize> {
     let mut ret = Vec::new();
     ScrollArea::vertical()
         .auto_shrink([true, false])
@@ -463,7 +468,9 @@ mod commit_log {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show_rows(ui, row_height, commit_graph.nodes.len(), |ui, row_range| {
-                if row_range.end > commit_graph.nodes.len() || row_range.start > commit_graph.nodes.len() {
+                if row_range.end > commit_graph.nodes.len()
+                    || row_range.start > commit_graph.nodes.len()
+                {
                     ui.scroll_to_cursor(None);
                     return Vec::new();
                 }
@@ -474,21 +481,21 @@ mod commit_log {
 
                 let max_edge_x = render_edges(ui, &commit_graph.edges, &converter, &row_range);
                 let text_rect = converter.text_rect(max_edge_x);
-                let mut text_ui =
-                    ui.child_ui(text_rect, egui::Layout::default());
+                let mut text_ui = ui.child_ui(text_rect, egui::Layout::default());
 
                 // I'm unsure that this is right, however both Ui::max_rect and Ui::clip_rect are
                 // not small enough
                 let clip_rect = ui.clip_rect();
                 text_ui.set_clip_rect(Rect::from_min_max(
-                        Pos2::new(
-                            f32::max(clip_rect.left(), text_rect.left()),
-                            f32::max(clip_rect.top(), text_rect.top()),
-                            ),
-                        Pos2::new(
-                            f32::min(clip_rect.right(), text_rect.right()),
-                            f32::min(clip_rect.bottom(), text_rect.bottom()),
-                    )));
+                    Pos2::new(
+                        f32::max(clip_rect.left(), text_rect.left()),
+                        f32::max(clip_rect.top(), text_rect.top()),
+                    ),
+                    Pos2::new(
+                        f32::min(clip_rect.right(), text_rect.right()),
+                        f32::min(clip_rect.bottom(), text_rect.bottom()),
+                    ),
+                ));
 
                 for node in &commit_graph.nodes[row_range] {
                     render_commit_node(ui, &node.position, &converter);

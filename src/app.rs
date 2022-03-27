@@ -98,27 +98,26 @@ impl App {
                     head: repo.head()?,
                     name: "HEAD".to_string(),
                 })];
-                branches.extend(repo.branches()
-                    .context("Failed to retrieve branches")?);
+                branches.extend(repo.branches().context("Failed to retrieve branches")?);
 
                 self.tx
-                    .send(AppEvent::BranchesUpdated(branches.into_iter().collect::<Result<Vec<Branch>>>()?))
+                    .send(AppEvent::BranchesUpdated(
+                        branches.into_iter().collect::<Result<Vec<Branch>>>()?,
+                    ))
                     .context("Failed to send response branches")?;
             }
-            AppRequest::SelectBranches(branches) => {
-                match &mut self.repo {
-                    Some(repo) => {
-                        let heads = branches.into_iter().map(|b| b.head).collect::<Vec<_>>();
-                        let graph = build_git_history_graph(repo, &heads)?;
-                        self.tx
-                            .send(AppEvent::CommitLogProcessed(graph))
-                            .context("Failed to send response commit log")?;
-                    }
-                    None => {
-                        bail!("Branches selected without valid repo");
-                    }
+            AppRequest::SelectBranches(branches) => match &mut self.repo {
+                Some(repo) => {
+                    let heads = branches.into_iter().map(|b| b.head).collect::<Vec<_>>();
+                    let graph = build_git_history_graph(repo, &heads)?;
+                    self.tx
+                        .send(AppEvent::CommitLogProcessed(graph))
+                        .context("Failed to send response commit log")?;
                 }
-            }
+                None => {
+                    bail!("Branches selected without valid repo");
+                }
+            },
         }
 
         Ok(())

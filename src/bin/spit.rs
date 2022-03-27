@@ -9,9 +9,7 @@ fn main() {
 
     if let Some(repo) = env::args().nth(1) {
         gui_tx
-            .send(spit::app::AppRequest::OpenRepo(PathBuf::from(
-                repo,
-            )))
+            .send(spit::app::AppRequest::OpenRepo(PathBuf::from(repo)))
             .expect("Gui TX did not initialize correctly");
     };
 

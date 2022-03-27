@@ -142,12 +142,20 @@ impl Repo {
         // metadata_storage, so from this point on it's safe for us to use the metadata storage
         // directly
 
-        build_sorted_metadata_indicies(&walked_indices, child_indices, &self.metadata_lookup, &self.metadata_storage)
+        build_sorted_metadata_indicies(
+            &walked_indices,
+            child_indices,
+            &self.metadata_lookup,
+            &self.metadata_storage,
+        )
     }
 
     /// Build the reversed dag for the given heads. The output is a Vec of Vecs that represents the
     /// child indices for each metadata_storage index
-    fn build_reverse_dag(&mut self, heads: &[ObjectId]) -> Result<(HashSet<usize>, Vec<Vec<usize>>)> {
+    fn build_reverse_dag(
+        &mut self,
+        heads: &[ObjectId],
+    ) -> Result<(HashSet<usize>, Vec<Vec<usize>>)> {
         let timer = Timer::new();
 
         let mut to_walk = heads
@@ -214,7 +222,9 @@ impl Repo {
     }
 
     pub(crate) fn head(&self) -> Result<ObjectId> {
-        Ok(self.git2_repo.head()?
+        Ok(self
+            .git2_repo
+            .head()?
             .resolve()?
             .target()
             .ok_or_else(|| Error::msg("Failed to resolve head reference"))?
@@ -285,7 +295,10 @@ fn sort_commit_metadata_indices_by_timestamp(indices: &mut [usize], storage: &[C
 }
 
 /// Find the indices in child_indices where there are no children
-fn get_childless_indices(walked_indices: &HashSet<usize>, child_indices: &[Vec<usize>]) -> Vec<usize> {
+fn get_childless_indices(
+    walked_indices: &HashSet<usize>,
+    child_indices: &[Vec<usize>],
+) -> Vec<usize> {
     child_indices
         .iter()
         .enumerate()
