@@ -2,7 +2,7 @@ use crate::{
     app::{AppEvent, AppRequest, RepoState, ViewState},
     git::{
         graph::{Edge, GraphPoint},
-        Branch, BranchId, Commit, HistoryGraph, ObjectId,
+        Branch, BranchId, Commit, Diff, DiffContent, HistoryGraph, ObjectId,
     },
     util::Cache,
 };
@@ -40,6 +40,8 @@ struct GuiInner {
     commit_graph: Option<HistoryGraph>,
     commit_cache: Cache<ObjectId, Commit>,
     selected_commit: Option<ObjectId>,
+    last_requested_diff: Option<ObjectId>,
+    current_diff: Option<Diff>,
 }
 
 impl GuiInner {
@@ -59,6 +61,8 @@ impl GuiInner {
             commit_graph: Default::default(),
             commit_cache: Cache::new(Self::MAX_CACHED_COMMITS),
             selected_commit: None,
+            last_requested_diff: None,
+            current_diff: None,
         }
     }
 
@@ -72,6 +76,8 @@ impl GuiInner {
         self.commit_graph = Default::default();
         self.commit_cache = Cache::new(Self::MAX_CACHED_COMMITS);
         self.selected_commit = None;
+        self.last_requested_diff = None;
+        self.current_diff = None;
     }
 
     fn handle_event(&mut self, response: AppEvent) {
@@ -87,6 +93,11 @@ impl GuiInner {
                     self.commit_cache.push(commit.metadata.id.clone(), commit);
                 } else {
                     warn!("Dropping commit in gui: {}", commit.metadata.id);
+                }
+            }
+            AppEvent::DiffFetched { repo, diff } => {
+                if self.repo_state.repo == repo {
+                    self.current_diff = Some(diff);
                 }
             }
             AppEvent::CommitGraphFetched(view_state, mut graph) => {
@@ -161,6 +172,39 @@ impl GuiInner {
         Ok(())
     }
 
+    fn request_missing_diff(&mut self) -> Result<()> {
+        let selected_commit = match &self.selected_commit {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        if Some(selected_commit) == self.last_requested_diff.as_ref() {
+            return Ok(());
+        }
+
+        let commit = match self.commit_cache.get(selected_commit) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        let parent = match commit.metadata.parents.get(0) {
+            // FIXME: Choose which parent to diff to
+            // FIXME: Support initial commit
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        self.tx.send(AppRequest::GetDiff {
+            expected_repo: self.repo_state.repo.clone(),
+            from: parent.clone(),
+            to: commit.metadata.id.clone(),
+        })?;
+
+        self.last_requested_diff = self.selected_commit.clone();
+
+        Ok(())
+    }
+
     fn update(&mut self, ctx: &egui::Context) -> Result<()> {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             if let Some(repo) = render_toolbar(ui, &mut self.show_console) {
@@ -184,7 +228,12 @@ impl GuiInner {
             .default_height(ctx.available_rect().height() / 2.0)
             .resizable(true)
             .show(ctx, |ui| {
-                render_commit_view(ui, &self.commit_cache, self.selected_commit.as_ref());
+                render_commit_view(
+                    ui,
+                    &self.commit_cache,
+                    self.selected_commit.as_ref(),
+                    self.current_diff.as_ref(),
+                );
             });
 
         egui::SidePanel::right("sidebar")
@@ -210,6 +259,7 @@ impl GuiInner {
             })
             .inner;
 
+        self.request_missing_diff()?;
         self.request_missing_commits(missing_commits)?;
         self.request_pending_view_state()?;
 
@@ -271,8 +321,9 @@ fn render_commit_view(
     ui: &mut Ui,
     cached_commits: &Cache<ObjectId, Commit>,
     selected_commit: Option<&ObjectId>,
+    current_diff: Option<&Diff>,
 ) {
-    let message = selected_commit
+    let mut message = selected_commit
         .and_then(|id| cached_commits.get(id))
         .map(|commit| {
             format!(
@@ -285,6 +336,31 @@ fn render_commit_view(
             )
         })
         .unwrap_or_else(String::new);
+
+    if let Some(diff) = current_diff {
+        if Some(&diff.to) == selected_commit {
+            for (file, content) in &diff.items {
+                message.push('\n');
+                message.push_str(&file.to_string());
+                message.push('\n');
+                match content {
+                    DiffContent::Patch(hunks) => {
+                        for (hunk, content) in hunks {
+                            message.push_str(hunk);
+                            message.push('\n');
+                            message.push_str(
+                                std::str::from_utf8(content)
+                                    .unwrap_or("Patch content is not valid utf8"),
+                            );
+                        }
+                    }
+                    DiffContent::Binary => {
+                        message.push_str("Binary content changed\n");
+                    }
+                }
+            }
+        }
+    }
 
     egui::ScrollArea::vertical()
         .max_height(f32::INFINITY)

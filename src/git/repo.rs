@@ -1,11 +1,14 @@
 use crate::{
-    git::{decompress, pack::Pack, Branch, BranchId, Commit, CommitMetadata, ObjectId},
+    git::{
+        decompress, pack::Pack, Branch, BranchId, Commit, CommitMetadata, Diff, DiffContent,
+        DiffFileHeader, ObjectId,
+    },
     util::Timer,
 };
 
 use anyhow::{Context, Error, Result};
 use flate2::Decompress;
-use log::debug;
+use log::{debug, error};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -248,6 +251,75 @@ impl Repo {
             .target()
             .ok_or_else(|| Error::msg("Failed to resolve head reference"))?
             .into())
+    }
+
+    pub(crate) fn diff(&self, id1: &ObjectId, id2: &ObjectId) -> Result<Diff> {
+        let oid1 = id1.into();
+        let oid2 = id2.into();
+
+        let t1 = self.git2_repo.find_commit(oid1)?.tree()?;
+        let t2 = self.git2_repo.find_commit(oid2)?.tree()?;
+
+        let diff = self
+            .git2_repo
+            .diff_tree_to_tree(Some(&t1), Some(&t2), None)?;
+
+        let mut current_hunk_header = String::new();
+        let mut output = Diff {
+            from: id1.clone(),
+            to: id2.clone(),
+            items: Default::default(),
+        };
+        let mut binary_files = Vec::new();
+
+        diff.foreach(
+            &mut |_d, _f| true,
+            Some(&mut |delta, _blob| {
+                let file_header = DiffFileHeader {
+                    old_file: delta.old_file().path().map(|x| x.to_path_buf()),
+                    new_file: delta.new_file().path().map(|x| x.to_path_buf()),
+                };
+
+                binary_files.push(file_header);
+                true
+            }),
+            None,
+            Some(&mut |delta, hunk, line| {
+                let file_header = DiffFileHeader {
+                    old_file: delta.old_file().path().map(|x| x.to_path_buf()),
+                    new_file: delta.new_file().path().map(|x| x.to_path_buf()),
+                };
+
+                if let Some(hunk) = hunk {
+                    current_hunk_header = std::str::from_utf8(hunk.header()).unwrap().to_string();
+                }
+
+                let file_entry = output
+                    .items
+                    .entry(file_header)
+                    .or_insert_with(|| DiffContent::Patch(HashMap::new()));
+                let file_entry = match file_entry {
+                    DiffContent::Binary => {
+                        error!("Found line diff for binary file");
+                        return true;
+                    }
+                    DiffContent::Patch(v) => v,
+                };
+                let v = file_entry
+                    .entry(current_hunk_header.clone())
+                    .or_insert_with(Vec::new);
+
+                v.push(line.origin() as u8);
+                v.extend_from_slice(line.content());
+                true
+            }),
+        )?;
+
+        output
+            .items
+            .extend(binary_files.into_iter().map(|f| (f, DiffContent::Binary)));
+
+        Ok(output)
     }
 }
 

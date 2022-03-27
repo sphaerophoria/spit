@@ -2,7 +2,7 @@ mod priority_queue;
 
 use crate::{
     app::priority_queue::PriorityQueue,
-    git::{build_git_history_graph, Branch, BranchId, Commit, HistoryGraph, ObjectId, Repo},
+    git::{build_git_history_graph, Branch, BranchId, Commit, Diff, HistoryGraph, ObjectId, Repo},
 };
 
 use anyhow::{bail, Context, Error, Result};
@@ -57,6 +57,11 @@ pub enum AppRequest {
         expected_repo: PathBuf,
         id: ObjectId,
     },
+    GetDiff {
+        expected_repo: PathBuf,
+        from: ObjectId,
+        to: ObjectId,
+    },
     ExecuteGitCommand(RepoState, String),
 }
 
@@ -65,6 +70,7 @@ pub enum AppEvent {
     RepoStateUpdated(RepoState),
     CommitGraphFetched(ViewState, HistoryGraph),
     CommitFetched { repo: PathBuf, commit: Commit },
+    DiffFetched { repo: PathBuf, diff: Diff },
     Error(String),
 }
 
@@ -157,6 +163,35 @@ impl App {
                     bail!("Commit requested without valid repo");
                 }
             },
+            AppRequest::GetDiff {
+                expected_repo,
+                from,
+                to,
+            } => {
+                let repo = self
+                    .repo
+                    .as_mut()
+                    .ok_or_else(|| Error::msg("Commit requested without valid repo"))?;
+
+                if expected_repo != repo.git_dir() {
+                    debug!(
+                        "Ignoring diff request for {} -> {}, {} is no longer open",
+                        from,
+                        to,
+                        expected_repo.display()
+                    );
+                    return Ok(());
+                }
+
+                let diff = repo
+                    .diff(&from, &to)
+                    .with_context(|| format!("Failed to retrieve diff for {} -> {}", from, to))?;
+
+                self.tx.send(AppEvent::DiffFetched {
+                    repo: expected_repo,
+                    diff,
+                })?;
+            }
             AppRequest::OpenRepo(path) => {
                 let mut repo = Repo::new(path.clone()).context("Failed to load git history")?;
 
