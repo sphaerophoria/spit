@@ -1,6 +1,6 @@
 use crate::{
     git::{decompress, pack::Pack, Branch, Commit, CommitMetadata, ObjectId},
-    Timer,
+    util::Timer,
 };
 
 use anyhow::{Context, Error, Result};
