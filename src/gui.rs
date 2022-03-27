@@ -4,6 +4,7 @@ use crate::{
         graph::{Edge, GraphPoint},
         Branch, Commit, HistoryGraph, ObjectId,
     },
+    util::Cache,
 };
 
 use anyhow::{Context, Result};
@@ -14,7 +15,7 @@ use eframe::{
 use log::{debug, error};
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::HashSet,
     ops::Range,
     path::PathBuf,
     sync::{
@@ -32,8 +33,7 @@ struct GuiInner {
     outgoing_requests: HashSet<ObjectId>,
     branches: Vec<Branch>,
     selected_branches: Vec<usize>,
-    cached_commits: HashMap<ObjectId, Commit>,
-    cached_commit_order: VecDeque<ObjectId>,
+    commit_cache: Cache<ObjectId, Commit>,
     selected_commit: Option<ObjectId>,
 }
 
@@ -50,8 +50,7 @@ impl GuiInner {
             outgoing_requests: HashSet::new(),
             branches: Vec::new(),
             selected_branches: Vec::new(),
-            cached_commits: HashMap::new(),
-            cached_commit_order: VecDeque::new(),
+            commit_cache: Cache::new(Self::MAX_CACHED_COMMITS),
             selected_commit: None,
         }
     }
@@ -61,8 +60,7 @@ impl GuiInner {
         self.commit_graph = None;
         self.outgoing_requests = HashSet::new();
         self.branches = Vec::new();
-        self.cached_commits = HashMap::new();
-        self.cached_commit_order = VecDeque::new();
+        self.commit_cache = Cache::new(Self::MAX_CACHED_COMMITS);
         self.selected_commit = None;
         self.selected_branches = Vec::new();
     }
@@ -74,24 +72,8 @@ impl GuiInner {
                 self.output.push(s);
             }
             AppEvent::CommitFetched(commit) => {
-                if self.cached_commit_order.len() >= Self::MAX_CACHED_COMMITS {
-                    let mut popped = self.cached_commit_order.pop_front().unwrap();
-                    if Some(&popped) == self.selected_commit.as_ref() {
-                        // Ensure that the selected commit stays in the queue
-                        popped = self.cached_commit_order.pop_front().unwrap();
-                        self.cached_commit_order
-                            .push_back(self.selected_commit.clone().unwrap());
-                    }
-                    self.cached_commits.remove(&popped);
-                    debug!("Clearing commit {}", popped);
-                }
-
-                debug!("Received commit {}", commit.metadata.id);
                 self.outgoing_requests.remove(&commit.metadata.id);
-                self.cached_commit_order
-                    .push_back(commit.metadata.id.clone());
-                self.cached_commits
-                    .insert(commit.metadata.id.clone(), commit);
+                self.commit_cache.push(commit.metadata.id.clone(), commit);
             }
             AppEvent::BranchesUpdated(branches) => {
                 self.branches = branches;
@@ -141,7 +123,7 @@ impl GuiInner {
             .default_height(150.0)
             .resizable(true)
             .show(ctx, |ui| {
-                render_commit_view(ui, &self.cached_commits, self.selected_commit.as_ref());
+                render_commit_view(ui, &self.commit_cache, self.selected_commit.as_ref());
             });
 
         let selected_branches = egui::SidePanel::right("sidebar")
@@ -168,7 +150,7 @@ impl GuiInner {
                 commit_log::render(
                     ui,
                     &self.commit_graph,
-                    &self.cached_commits,
+                    &self.commit_cache,
                     &mut self.selected_commit,
                 )
             })
@@ -242,7 +224,7 @@ impl epi::App for Gui {
 
 fn render_commit_view(
     ui: &mut Ui,
-    cached_commits: &HashMap<ObjectId, Commit>,
+    cached_commits: &Cache<ObjectId, Commit>,
     selected_commit: Option<&ObjectId>,
 ) {
     let message = selected_commit
@@ -450,7 +432,7 @@ mod commit_log {
     pub(super) fn render(
         ui: &mut Ui,
         commit_graph: &Option<HistoryGraph>,
-        commit_lookup: &HashMap<ObjectId, Commit>,
+        commit_cache: &Cache<ObjectId, Commit>,
         selected_commit: &mut Option<ObjectId>,
     ) -> Vec<ObjectId> {
         let commit_graph = match commit_graph.as_ref() {
@@ -500,7 +482,7 @@ mod commit_log {
                 for node in &commit_graph.nodes[row_range] {
                     render_commit_node(ui, &node.position, &converter);
 
-                    let message = match commit_lookup.get(&node.id) {
+                    let message = match commit_cache.get(&node.id) {
                         Some(v) => v
                             .message
                             .split('\n')
