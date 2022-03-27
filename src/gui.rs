@@ -40,6 +40,22 @@ struct GuiInner {
 impl GuiInner {
     const MAX_CACHED_COMMITS: usize = 1000;
 
+    fn new(tx: Sender<AppRequest>) -> GuiInner {
+        GuiInner {
+            tx,
+            output: Vec::new(),
+            git_command: String::new(),
+            commit_graph: None,
+            show_console: false,
+            outgoing_requests: HashSet::new(),
+            branches: Vec::new(),
+            selected_branches: Vec::new(),
+            cached_commits: HashMap::new(),
+            cached_commit_order: VecDeque::new(),
+            selected_commit: None,
+        }
+    }
+
     fn reset(&mut self) {
         self.git_command = String::new();
         self.commit_graph = None;
@@ -172,20 +188,7 @@ pub struct Gui {
 
 impl Gui {
     pub fn new(tx: Sender<AppRequest>, rx: Receiver<AppEvent>) -> Gui {
-        let inner = GuiInner {
-            tx,
-            output: Vec::new(),
-            git_command: String::new(),
-            commit_graph: None,
-            show_console: false,
-            outgoing_requests: HashSet::new(),
-            branches: Vec::new(),
-            selected_branches: Vec::new(),
-            cached_commits: HashMap::new(),
-            cached_commit_order: VecDeque::new(),
-            selected_commit: None,
-        };
-
+        let inner = GuiInner::new(tx);
         Gui {
             rx: Some(rx),
             inner: Arc::new(Mutex::new(inner)),
