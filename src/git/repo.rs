@@ -17,6 +17,7 @@ use std::{
 pub(crate) struct Repo {
     git2_repo: git2::Repository,
     git_dir: PathBuf,
+    repo_root: PathBuf,
     packs: Vec<Pack>,
     // NOTE: We do not store the commit metadata within the hashmap directly because it makes it
     // difficult to hand out references to the metadata without copying it out. Instead we hand out
@@ -27,14 +28,15 @@ pub(crate) struct Repo {
 }
 
 impl Repo {
-    pub(crate) fn new(repo_root: &Path) -> Result<Repo> {
+    pub(crate) fn new(repo_root: PathBuf) -> Result<Repo> {
         let git_dir = repo_root.join(".git");
         let packs = find_packs(&git_dir)?;
         let decompressor = Decompress::new(true);
-        let git2_repo = git2::Repository::open(repo_root).context("Failed to open git2 repo")?;
+        let git2_repo = git2::Repository::open(repo_root.clone()).context("Failed to open git2 repo")?;
 
         Ok(Repo {
             git2_repo,
+            repo_root,
             git_dir,
             packs,
             metadata_lookup: HashMap::new(),
@@ -218,7 +220,7 @@ impl Repo {
     }
 
     pub(crate) fn git_dir(&self) -> &Path {
-        &self.git_dir
+        &self.repo_root
     }
 
     pub(crate) fn head(&self) -> Result<ObjectId> {
@@ -355,7 +357,7 @@ mod test {
             .unpack(git_dir.path())
             .unwrap();
 
-        let mut history = Repo::new(&git_dir.path().to_path_buf())?;
+        let mut history = Repo::new(git_dir.path().to_path_buf())?;
 
         let oid = "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?;
         let expected_parent: ObjectId = "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?;
@@ -379,7 +381,7 @@ mod test {
             .unpack(git_dir.path())
             .unwrap();
 
-        let mut history = Repo::new(&git_dir.path().to_path_buf())?;
+        let mut history = Repo::new(git_dir.path().to_path_buf())?;
 
         let oid = "760e2389d32e245213eaf71d88e314fa63709c79".parse()?;
         let expected_parent: ObjectId = "54c637bcfcaab19064ac59db025bc05d941a3bf3".parse()?;

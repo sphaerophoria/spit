@@ -85,7 +85,7 @@ impl App {
                 }
             },
             AppRequest::OpenRepo(path) => {
-                let repo = Repo::new(&path).context("Failed to load git history")?;
+                let repo = Repo::new(path).context("Failed to load git history")?;
                 self.repo = Some(repo);
                 let repo = self.repo.as_mut().unwrap();
 
