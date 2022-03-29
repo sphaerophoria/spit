@@ -327,15 +327,17 @@ fn get_childless_indices(
     walked_indices: &HashSet<usize>,
     child_indices: &[Vec<usize>],
 ) -> Vec<usize> {
-    child_indices
+    walked_indices
         .iter()
-        .enumerate()
-        .filter_map(|(idx, child_indices)| {
-            if child_indices.is_empty() && walked_indices.contains(&idx) {
-                Some(idx)
-            } else {
-                None
+        .filter_map(|idx| match child_indices.get(*idx) {
+            Some(v) => {
+                if v.is_empty() {
+                    Some(*idx)
+                } else {
+                    None
+                }
             }
+            None => Some(*idx),
         })
         .collect()
 }
@@ -598,6 +600,30 @@ mod test {
 
         let head = repo.find_branch_head(&BranchId::Remote("origin/master".into()))?;
         assert_eq!(head, "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_new_commit() -> Result<()> {
+        let git_dir = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
+
+        let mut repo = Repo::new(git_dir.path().to_path_buf())?;
+        let original_head = repo.metadata_iter(&["83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?])?.next().unwrap().clone();
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir.path())
+            .args(&["commit", "-m", "testing", "--allow-empty"])
+            .output()?;
+
+        let object_id = repo.find_branch_head(&BranchId::Head)?;
+        let new_head = repo.metadata_iter(&[object_id])?.next().unwrap();
+
+        assert_ne!(original_head.id, new_head.id);
+        assert_eq!(new_head.parents.len(), 1);
+        assert_eq!(new_head.parents, &[original_head.id]);
+
         Ok(())
     }
 }

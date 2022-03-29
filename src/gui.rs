@@ -99,9 +99,14 @@ impl GuiInner {
                     self.reset();
                     self.pending_view_state.selected_branches = vec![BranchId::Head];
                 }
+
                 self.pending_view_state.update_with_repo_state(&repo_state);
                 self.view_state.update_with_repo_state(&repo_state);
-                self.repo_state = repo_state;
+                if self.repo_state != repo_state {
+                    self.repo_state = repo_state;
+                    // Reset requested view state to force a re-request
+                    self.last_requsted_view_state = Default::default();
+                }
             }
             AppEvent::Error(e) => {
                 // FIXME: Proper error text

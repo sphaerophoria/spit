@@ -1,11 +1,16 @@
 use crate::git::{build_git_history_graph, Branch, BranchId, Commit, HistoryGraph, ObjectId, Repo};
 
 use anyhow::{bail, Context, Error, Result};
-use log::{debug, error};
+use log::{debug, error, info};
+use notify::{self, RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
+
 use std::{
-    path::PathBuf,
+    ffi::OsStr,
+    path::{Path, PathBuf},
     process::Command,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Eq, PartialEq, Default)]
@@ -40,6 +45,7 @@ pub enum AppRequest {
         expected_repo: PathBuf,
         view_state: ViewState,
     },
+    Refresh,
     GetCommit {
         expected_repo: PathBuf,
         id: ObjectId,
@@ -58,12 +64,22 @@ pub enum AppEvent {
 pub struct App {
     tx: Sender<AppEvent>,
     rx: Receiver<AppRequest>,
+    notifier: RecommendedWatcher,
     repo: Option<Repo>,
 }
 
 impl App {
-    pub fn new(tx: Sender<AppEvent>, rx: Receiver<AppRequest>) -> App {
-        App { tx, rx, repo: None }
+    pub fn new(
+        event_tx: Sender<AppEvent>,
+        request_tx: Sender<AppRequest>,
+        request_rx: Receiver<AppRequest>,
+    ) -> Result<App> {
+        Ok(App {
+            tx: event_tx,
+            rx: request_rx,
+            notifier: spawn_watcher(request_tx)?,
+            repo: None,
+        })
     }
 
     pub fn run(&mut self) {
@@ -135,7 +151,7 @@ impl App {
                 }
             },
             AppRequest::OpenRepo(path) => {
-                let mut repo = Repo::new(path).context("Failed to load git history")?;
+                let mut repo = Repo::new(path.clone()).context("Failed to load git history")?;
 
                 let repo_state = get_repo_state(&mut repo)?;
 
@@ -144,6 +160,11 @@ impl App {
                     .context("Failed to send response branches")?;
 
                 self.repo = Some(repo);
+                // FIXME: There is a race here where if a new object is created between when we
+                // fetched the repo state and now we will not update the repo, however if we move
+                // this up and changing repos fails the old path will not be watched anymore, and
+                // we may miss an update in the old repo.
+                self.notifier.watch(path, RecursiveMode::Recursive)?;
             }
             AppRequest::GetCommitGraph {
                 expected_repo,
@@ -174,6 +195,13 @@ impl App {
                     bail!("Branches selected without valid repo");
                 }
             },
+            AppRequest::Refresh => {
+                let repo_state = self.get_repo_state()?;
+
+                self.tx
+                    .send(AppEvent::RepoStateUpdated(repo_state))
+                    .context("Failed to send response branches")?;
+            }
         }
 
         Ok(())
@@ -199,9 +227,68 @@ fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
     })
 }
 
+fn path_is_lock_file(path: Option<&Path>) -> bool {
+    let path = match path {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let extension = match path.extension() {
+        Some(e) => e,
+        None => return false,
+    };
+
+    extension == OsStr::new("lock")
+}
+
+fn debounce_event(notifier_rx: &Receiver<RawEvent>) {
+    let debounce_max = Instant::now() + Duration::from_secs(2);
+    let debounce_period = Duration::from_millis(500);
+
+    while let Ok(_event) = notifier_rx.recv_timeout(debounce_period) {
+        if Instant::now() > debounce_max {
+            return;
+        }
+    }
+}
+
+fn spawn_watcher(app_tx: Sender<AppRequest>) -> Result<RecommendedWatcher> {
+    let (notifier_tx, notifier_rx) = mpsc::channel();
+    let notifier = notify::raw_watcher(notifier_tx)?;
+    thread::spawn(move || {
+        while let Ok(event) = notifier_rx.recv() {
+            if path_is_lock_file(event.path.as_deref()) {
+                continue;
+            }
+
+            // Debounce to avoid spam refreshing
+            debounce_event(&notifier_rx);
+
+            if let Err(_e) = app_tx.send(AppRequest::Refresh) {
+                info!("App handle is no longer valid, closing watcher");
+                return;
+            }
+        }
+    });
+
+    Ok(notifier)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_lock_file_check() {
+        assert_eq!(path_is_lock_file(None), false);
+        assert_eq!(path_is_lock_file(Some(&Path::new("test.test"))), false);
+        assert_eq!(path_is_lock_file(Some(&Path::new("test.lock"))), true);
+        // I don't know what I think this should be, but lets at least prove that we know how it
+        // works
+        assert_eq!(path_is_lock_file(Some(&Path::new(".lock"))), false);
+        assert_eq!(path_is_lock_file(Some(&Path::new("lock"))), false);
+        assert_eq!(path_is_lock_file(Some(&Path::new("test/test.lock"))), true);
+    }
 
     #[test]
     fn view_state_deleted_branch() -> Result<()> {
