@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-
 mod decompress;
 pub(crate) mod graph;
 mod object_id;
@@ -17,11 +16,27 @@ pub(crate) struct CommitMetadata {
     pub(crate) timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BranchId {
+    Head,
+    Local(String),
+    Remote(String),
+}
+
+impl ToString for BranchId {
+    fn to_string(&self) -> String {
+        match self {
+            BranchId::Head => "HEAD".to_string(),
+            BranchId::Remote(name) => name.clone(),
+            BranchId::Local(name) => name.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, PartialOrd, Ord)]
 pub struct Branch {
+    pub(crate) id: BranchId,
     pub(crate) head: ObjectId,
-    #[allow(unused)]
-    pub(crate) name: String,
 }
 
 #[derive(Debug, Clone)]

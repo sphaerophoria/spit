@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::{fmt, result::Result as StdResult, str::FromStr};
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub struct ObjectId {
     id: [u8; 20],
 }

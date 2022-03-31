@@ -1,8 +1,8 @@
 use crate::{
-    app::{AppEvent, AppRequest},
+    app::{AppEvent, AppRequest, RepoState, ViewState},
     git::{
         graph::{Edge, GraphPoint},
-        Branch, Commit, HistoryGraph, ObjectId,
+        Branch, BranchId, Commit, HistoryGraph, ObjectId,
     },
     util::Cache,
 };
@@ -12,7 +12,7 @@ use eframe::{
     egui::{self, Pos2, Rect, Response, ScrollArea, Sense, TextEdit, TextStyle, Ui, Widget},
     epi,
 };
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use std::{
     collections::HashSet,
@@ -28,11 +28,13 @@ struct GuiInner {
     tx: Sender<AppRequest>,
     output: Vec<String>,
     git_command: String,
-    commit_graph: Option<HistoryGraph>,
     show_console: bool,
     outgoing_requests: HashSet<ObjectId>,
-    branches: Vec<Branch>,
-    selected_branches: Vec<usize>,
+    repo_state: RepoState,
+    view_state: ViewState,
+    pending_view_state: ViewState,
+    last_requsted_view_state: ViewState,
+    commit_graph: Option<HistoryGraph>,
     commit_cache: Cache<ObjectId, Commit>,
     selected_commit: Option<ObjectId>,
 }
@@ -45,11 +47,13 @@ impl GuiInner {
             tx,
             output: Vec::new(),
             git_command: String::new(),
-            commit_graph: None,
             show_console: false,
             outgoing_requests: HashSet::new(),
-            branches: Vec::new(),
-            selected_branches: Vec::new(),
+            repo_state: Default::default(),
+            view_state: Default::default(),
+            pending_view_state: Default::default(),
+            last_requsted_view_state: Default::default(),
+            commit_graph: Default::default(),
             commit_cache: Cache::new(Self::MAX_CACHED_COMMITS),
             selected_commit: None,
         }
@@ -57,12 +61,14 @@ impl GuiInner {
 
     fn reset(&mut self) {
         self.git_command = String::new();
-        self.commit_graph = None;
         self.outgoing_requests = HashSet::new();
-        self.branches = Vec::new();
+        self.repo_state = Default::default();
+        self.view_state = Default::default();
+        self.pending_view_state = Default::default();
+        self.last_requsted_view_state = Default::default();
+        self.commit_graph = Default::default();
         self.commit_cache = Cache::new(Self::MAX_CACHED_COMMITS);
         self.selected_commit = None;
-        self.selected_branches = Vec::new();
     }
 
     fn handle_event(&mut self, response: AppEvent) {
@@ -71,30 +77,79 @@ impl GuiInner {
                 // FIXME: Rolling buffer
                 self.output.push(s);
             }
-            AppEvent::CommitFetched(commit) => {
-                self.outgoing_requests.remove(&commit.metadata.id);
-                self.commit_cache.push(commit.metadata.id.clone(), commit);
+            AppEvent::CommitFetched { repo, commit } => {
+                let current_repo_is_same = self.repo_state.repo == repo;
+                if current_repo_is_same {
+                    self.outgoing_requests.remove(&commit.metadata.id);
+                    self.commit_cache.push(commit.metadata.id.clone(), commit);
+                } else {
+                    warn!("Dropping commit in gui: {}", commit.metadata.id);
+                }
             }
-            AppEvent::BranchesUpdated(branches) => {
-                self.branches = branches;
-                self.selected_branches = vec![0];
+            AppEvent::CommitGraphFetched(view_state, mut graph) => {
+                self.view_state = view_state;
+
+                // Sort the start positions in increasing order
+                graph.edges.sort_by(|a, b| a.a.y.cmp(&b.a.y));
+
+                self.commit_graph = Some(graph);
+            }
+            AppEvent::RepoStateUpdated(repo_state) => {
+                if self.repo_state.repo != repo_state.repo {
+                    self.reset();
+                    self.pending_view_state.selected_branches = vec![BranchId::Head];
+                }
+                self.pending_view_state.update_with_repo_state(&repo_state);
+                self.view_state.update_with_repo_state(&repo_state);
+                self.repo_state = repo_state;
             }
             AppEvent::Error(e) => {
                 // FIXME: Proper error text
                 self.output.push(e);
             }
-            AppEvent::CommitLogProcessed(mut graph) => {
-                graph.edges.sort_by(|a, b| a.a.y.cmp(&b.a.y));
-                self.commit_graph = Some(graph);
-            }
         }
     }
 
     fn open_repo(&mut self, repo: PathBuf) {
-        self.reset();
         self.tx
             .send(AppRequest::OpenRepo(repo))
             .expect("App handle invalid");
+    }
+
+    fn send_current_git_command(&mut self) {
+        let cmd = std::mem::take(&mut self.git_command);
+        self.tx
+            .send(AppRequest::ExecuteGitCommand(self.repo_state.clone(), cmd))
+            .expect("Failed to request git command");
+    }
+
+    fn request_pending_view_state(&mut self) -> Result<()> {
+        if self.pending_view_state != self.last_requsted_view_state {
+            self.tx.send(AppRequest::GetCommitGraph {
+                expected_repo: self.repo_state.repo.clone(),
+                view_state: self.pending_view_state.clone(),
+            })?;
+            self.last_requsted_view_state = self.pending_view_state.clone();
+        }
+        Ok(())
+    }
+
+    fn request_missing_commits(&mut self, missing_commits: Vec<ObjectId>) -> Result<()> {
+        for id in missing_commits {
+            if !self.outgoing_requests.contains(&id) {
+                debug!("Requesting commit {}", id);
+
+                self.tx
+                    .send(AppRequest::GetCommit {
+                        expected_repo: self.repo_state.repo.clone(),
+                        id: id.clone(),
+                    })
+                    .context("Failed to request commit")?;
+
+                self.outgoing_requests.insert(id);
+            }
+        }
+        Ok(())
     }
 
     fn update(&mut self, ctx: &egui::Context) -> Result<()> {
@@ -112,10 +167,7 @@ impl GuiInner {
                 .inner;
 
             if send_git_command {
-                let cmd = std::mem::take(&mut self.git_command);
-                self.tx
-                    .send(AppRequest::ExecuteGitCommand(cmd))
-                    .expect("Failed to request git command");
+                self.send_current_git_command();
             }
         }
 
@@ -126,47 +178,30 @@ impl GuiInner {
                 render_commit_view(ui, &self.commit_cache, self.selected_commit.as_ref());
             });
 
-        let selected_branches = egui::SidePanel::right("sidebar")
+        egui::SidePanel::right("sidebar")
             .resizable(true)
             .show(ctx, |ui| {
-                render_side_panel(ui, &self.branches, &self.selected_branches)
-            })
-            .inner;
-
-        if self.selected_branches != selected_branches {
-            self.selected_branches = selected_branches;
-            let selected_branches = self
-                .selected_branches
-                .iter()
-                .map(|idx| self.branches[*idx].clone())
-                .collect();
-            self.tx
-                .send(AppRequest::SelectBranches(selected_branches))
-                .expect("Failed to request branch selection");
-        };
+                render_side_panel(
+                    ui,
+                    &self.repo_state.branches,
+                    &self.view_state,
+                    &mut self.pending_view_state,
+                )
+            });
 
         let missing_commits = egui::CentralPanel::default()
             .show(ctx, |ui| -> Vec<ObjectId> {
                 commit_log::render(
                     ui,
-                    &self.commit_graph,
+                    self.commit_graph.as_ref(),
                     &self.commit_cache,
                     &mut self.selected_commit,
                 )
             })
             .inner;
 
-        for id in missing_commits {
-            if !self.outgoing_requests.contains(&id) {
-                debug!("Requesting commit {}", id);
-
-                self.tx
-                    .send(AppRequest::GetCommit(id.clone()))
-                    .context("Failed to request commit")?;
-
-                self.outgoing_requests.insert(id);
-            }
-        }
+        self.request_missing_commits(missing_commits)?;
+        self.request_pending_view_state()?;
 
         Ok(())
     }
@@ -293,21 +328,28 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
     response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
 }
 
-fn render_side_panel(ui: &mut Ui, branches: &[Branch], selected_branches: &[usize]) -> Vec<usize> {
-    let mut ret = Vec::new();
+fn render_side_panel(
+    ui: &mut Ui,
+    branches: &[Branch],
+    _view_state: &ViewState,
+    pending_view_state: &mut ViewState,
+) {
+    let mut new_selected = Vec::with_capacity(pending_view_state.selected_branches.len());
+
     ScrollArea::vertical()
         .auto_shrink([true, false])
         .show(ui, |ui| {
-            for (idx, branch) in branches.iter().enumerate() {
-                let mut selected = selected_branches.contains(&idx);
-                ui.checkbox(&mut selected, &branch.name);
+            for branch in branches.iter() {
+                let mut selected = pending_view_state.selected_branches.contains(&branch.id);
+
+                ui.checkbox(&mut selected, &branch.id.to_string());
                 if selected {
-                    ret.push(idx);
+                    new_selected.push(branch.id.clone());
                 }
             }
         });
 
-    ret
+    pending_view_state.selected_branches = new_selected;
 }
 
 mod commit_log {
@@ -371,7 +413,6 @@ mod commit_log {
             };
 
         for edge in &edges[..edge_end_idx] {
-            // FIXME: as usize
             // FIXME: Filtering every frame is expensive
             if (edge.b.y as usize) < row_range.start || (edge.a.y as usize) > row_range.end {
                 continue;
@@ -431,11 +472,11 @@ mod commit_log {
 
     pub(super) fn render(
         ui: &mut Ui,
-        commit_graph: &Option<HistoryGraph>,
+        commit_graph: Option<&HistoryGraph>,
         commit_cache: &Cache<ObjectId, Commit>,
         selected_commit: &mut Option<ObjectId>,
     ) -> Vec<ObjectId> {
-        let commit_graph = match commit_graph.as_ref() {
+        let commit_graph = match commit_graph {
             Some(v) => v,
             None => return Vec::new(),
         };

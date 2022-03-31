@@ -1,5 +1,5 @@
 use crate::{
-    git::{decompress, pack::Pack, Branch, Commit, CommitMetadata, ObjectId},
+    git::{decompress, pack::Pack, Branch, BranchId, Commit, CommitMetadata, ObjectId},
     util::Timer,
 };
 
@@ -32,7 +32,8 @@ impl Repo {
         let git_dir = repo_root.join(".git");
         let packs = find_packs(&git_dir)?;
         let decompressor = Decompress::new(true);
-        let git2_repo = git2::Repository::open(repo_root.clone()).context("Failed to open git2 repo")?;
+        let git2_repo =
+            git2::Repository::open(repo_root.clone()).context("Failed to open git2 repo")?;
 
         Ok(Repo {
             git2_repo,
@@ -205,25 +206,41 @@ impl Repo {
 
     pub(crate) fn branches(&self) -> Result<impl Iterator<Item = Result<Branch>> + '_> {
         Ok(self.git2_repo.branches(None)?.map(|b| -> Result<Branch> {
-            let b = b?.0;
-            let name = b.name()?.ok_or_else(|| Error::msg("Invalid branch name"))?;
-            let name = name.to_string();
-            let reference = b.into_reference().resolve()?;
-            let oid = reference
-                .target()
-                .ok_or_else(|| Error::msg("Failed to resolve reference"))?;
+            let (b, t) = b?;
+            let name = b
+                .name()?
+                .ok_or_else(|| Error::msg("Invalid branch name"))?
+                .to_string();
+            let id = match t {
+                git2::BranchType::Local => BranchId::Local(name),
+                git2::BranchType::Remote => BranchId::Remote(name),
+            };
             Ok(Branch {
-                name,
-                head: oid.into(),
+                id,
+                head: git2_branch_object(b)?,
             })
         }))
+    }
+
+    pub(crate) fn find_branch_head(&self, id: &BranchId) -> Result<ObjectId> {
+        let head = match id {
+            BranchId::Head => self.head()?,
+            BranchId::Local(name) => {
+                git2_branch_object(self.git2_repo.find_branch(name, git2::BranchType::Local)?)?
+            }
+            BranchId::Remote(name) => {
+                git2_branch_object(self.git2_repo.find_branch(name, git2::BranchType::Remote)?)?
+            }
+        };
+
+        Ok(head)
     }
 
     pub(crate) fn git_dir(&self) -> &Path {
         &self.repo_root
     }
 
-    pub(crate) fn head(&self) -> Result<ObjectId> {
+    fn head(&self) -> Result<ObjectId> {
         Ok(self
             .git2_repo
             .head()?
@@ -232,6 +249,15 @@ impl Repo {
             .ok_or_else(|| Error::msg("Failed to resolve head reference"))?
             .into())
     }
+}
+
+fn git2_branch_object(branch: git2::Branch) -> Result<ObjectId> {
+    Ok(branch
+        .into_reference()
+        .resolve()?
+        .target()
+        .ok_or_else(|| Error::msg("Failed to resolve reference"))?
+        .into())
 }
 
 fn build_sorted_metadata_indicies<'a>(
@@ -346,6 +372,7 @@ fn find_packs(git_dir: &Path) -> Result<Vec<Pack>> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::process::Command;
     use tempfile::TempDir;
 
     const GIT_DIR_TARBALL: &[u8] =
@@ -457,6 +484,120 @@ mod test {
         assert_ne!(packs.iter().find(|p| **p == expected_pack_1), None);
         assert_ne!(packs.iter().find(|p| **p == expected_pack_2), None);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_branches() -> Result<()> {
+        let git_dir = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
+
+        let git_dir2 = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir2.path())?;
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir2.path())
+            .args(&[
+                "branch",
+                "test_branch",
+                "760e2389d32e245213eaf71d88e314fa63709c79",
+            ])
+            .output()?;
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir.path())
+            .args(&["remote", "add", "origin"])
+            .arg(git_dir2.path())
+            .output()?;
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir.path())
+            .args(&["fetch", "origin"])
+            .output()?;
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir.path())
+            .args(&[
+                "branch",
+                "test_branch",
+                "ce4f6371c0a653f6206e4020704674d63fc8e3d4",
+            ])
+            .output()?;
+
+        let repo = Repo::new(git_dir.path().to_path_buf())?;
+        let mut branches = repo.branches()?.collect::<Result<Vec<_>>>()?;
+        branches.sort();
+
+        assert_eq!(
+            branches,
+            &[
+                Branch {
+                    id: BranchId::Local("master".to_string()),
+                    head: "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?
+                },
+                Branch {
+                    id: BranchId::Local("test_branch".to_string()),
+                    head: "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?
+                },
+                Branch {
+                    id: BranchId::Remote("origin/master".to_string()),
+                    head: "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?
+                },
+                Branch {
+                    id: BranchId::Remote("origin/test_branch".to_string()),
+                    head: "760e2389d32e245213eaf71d88e314fa63709c79".parse()?
+                },
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lookup_branch_head() -> Result<()> {
+        let git_dir = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
+
+        let git_dir2 = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir2.path())?;
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir.path())
+            .args(&["remote", "add", "origin"])
+            .arg(git_dir2.path())
+            .output()?;
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir.path())
+            .args(&["fetch", "origin"])
+            .output()?;
+
+        Command::new("git")
+            .arg("-C")
+            .arg(git_dir.path())
+            .args(&[
+                "branch",
+                "test_branch",
+                "ce4f6371c0a653f6206e4020704674d63fc8e3d4",
+            ])
+            .output()?;
+
+        let repo = Repo::new(git_dir.path().to_path_buf())?;
+
+        let head = repo.find_branch_head(&BranchId::Local("test_branch".into()))?;
+        assert_eq!(head, "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?);
+
+        let head = repo.find_branch_head(&BranchId::Head)?;
+        assert_eq!(head, "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?);
+
+        let head = repo.find_branch_head(&BranchId::Remote("origin/master".into()))?;
+        assert_eq!(head, "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?);
         Ok(())
     }
 }
