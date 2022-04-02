@@ -30,8 +30,12 @@ def main(remote, url):
 
             for line in sys.stdin:
                 line = line.split(" ")
-                print(f"Testing commit {line[1]}")
-                subprocess.run(['git', 'checkout', line[1]], check=True)
+                commit_id = line[1]
+                print(f"Testing commit {commit_id}")
+                if commit_id.strip() == '0000000000000000000000000000000000000000':
+                    continue
+
+                subprocess.run(['git', 'checkout', commit_id], check=True)
 
                 subprocess.run(['cargo', 'test'], check=True)
 
