@@ -9,13 +9,16 @@ use crate::{
 
 use anyhow::{Context, Result};
 use eframe::{
-    egui::{self, Pos2, Rect, Response, ScrollArea, Sense, TextEdit, TextStyle, Ui, Widget},
+    egui::{
+        self, text::LayoutJob, Color32, Pos2, Rect, Response, RichText, ScrollArea, Sense,
+        TextEdit, TextFormat, TextStyle, Ui, Widget,
+    },
     epi,
 };
 use log::{debug, error, warn};
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ops::Range,
     path::PathBuf,
     sync::{
@@ -178,7 +181,7 @@ impl GuiInner {
         }
 
         egui::TopBottomPanel::bottom("commit_view_panel")
-            .default_height(150.0)
+            .default_height(ctx.available_rect().height() / 2.0)
             .resizable(true)
             .show(ctx, |ui| {
                 render_commit_view(ui, &self.commit_cache, self.selected_commit.as_ref());
@@ -199,6 +202,7 @@ impl GuiInner {
             .show(ctx, |ui| -> Vec<ObjectId> {
                 commit_log::render(
                     ui,
+                    &self.repo_state,
                     self.commit_graph.as_ref(),
                     &self.commit_cache,
                     &mut self.selected_commit,
@@ -328,7 +332,9 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
         });
 
     let response = egui::TextEdit::multiline(git_command)
-        .font(egui::TextStyle::Monospace)
+        .desired_width(ui.available_width())
+        .desired_rows(1)
+        .font(TextStyle::Monospace)
         .ui(ui);
 
     response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
@@ -343,12 +349,15 @@ fn render_side_panel(
     let mut new_selected = Vec::with_capacity(pending_view_state.selected_branches.len());
 
     ScrollArea::vertical()
-        .auto_shrink([true, false])
+        .auto_shrink([false, false])
         .show(ui, |ui| {
             for branch in branches.iter() {
                 let mut selected = pending_view_state.selected_branches.contains(&branch.id);
 
-                ui.checkbox(&mut selected, &branch.id.to_string());
+                let (color, s) = branch_id_to_message_and_color(branch.id.clone());
+                let text = RichText::new(s).color(color);
+
+                ui.checkbox(&mut selected, text);
                 if selected {
                     new_selected.push(branch.id.clone());
                 }
@@ -356,6 +365,14 @@ fn render_side_panel(
         });
 
     pending_view_state.selected_branches = new_selected;
+}
+
+fn branch_id_to_message_and_color(id: BranchId) -> (Color32, String) {
+    match id {
+        BranchId::Head => (Color32::LIGHT_BLUE, "HEAD".into()),
+        BranchId::Local(name) => (Color32::LIGHT_GREEN, name),
+        BranchId::Remote(name) => (Color32::LIGHT_RED, name),
+    }
 }
 
 mod commit_log {
@@ -440,7 +457,7 @@ mod commit_log {
         max_edge_x
     }
 
-    fn render_commit_message(ui: &mut Ui, message: &str, selected: bool) -> Response {
+    fn render_commit_message(ui: &mut Ui, message: LayoutJob, selected: bool) -> Response {
         // Would be nice to use SeletableLable, but I couldn't find a way to prevent it from
         // wrapping
         let (pos, galley, message_response) = egui::Label::new(message)
@@ -476,8 +493,18 @@ mod commit_log {
         ui.painter().circle_filled(node_pos, 3.0, stroke.color);
     }
 
+    fn build_branch_id_lookup(state: &RepoState) -> HashMap<ObjectId, Vec<BranchId>> {
+        let mut ret = HashMap::new();
+        for branch in &state.branches {
+            let entry = ret.entry(branch.head.clone()).or_insert(vec![]);
+            entry.push(branch.id.clone());
+        }
+        ret
+    }
+
     pub(super) fn render(
         ui: &mut Ui,
+        repo_state: &RepoState,
         commit_graph: Option<&HistoryGraph>,
         commit_cache: &Cache<ObjectId, Commit>,
         selected_commit: &mut Option<ObjectId>,
@@ -526,8 +553,21 @@ mod commit_log {
                     ),
                 ));
 
+                let branch_id_lookup = build_branch_id_lookup(repo_state);
                 for node in &commit_graph.nodes[row_range] {
                     render_commit_node(ui, &node.position, &converter);
+
+                    let mut job = LayoutJob::default();
+                    let style = text_ui.style();
+                    let font = style.text_styles[&TextStyle::Body].clone();
+
+                    if let Some(ids) = branch_id_lookup.get(&node.id) {
+                        for id in ids {
+                            let (color, mut name) = branch_id_to_message_and_color(id.clone());
+                            name.push(' ');
+                            job.append(&name, 0.0, TextFormat::simple(font.clone(), color));
+                        }
+                    }
 
                     let message = match commit_cache.get(&node.id) {
                         Some(v) => v
@@ -542,8 +582,14 @@ mod commit_log {
                         }
                     };
 
+                    job.append(
+                        &message,
+                        0.0,
+                        TextFormat::simple(font, style.visuals.text_color()),
+                    );
+
                     let selected = selected_commit.as_ref() == Some(&node.id);
-                    if render_commit_message(&mut text_ui, &message, selected).clicked() {
+                    if render_commit_message(&mut text_ui, job, selected).clicked() {
                         *selected_commit = Some(node.id.clone());
                     }
                 }
