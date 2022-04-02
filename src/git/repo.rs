@@ -609,7 +609,11 @@ mod test {
         tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
 
         let mut repo = Repo::new(git_dir.path().to_path_buf())?;
-        let original_head = repo.metadata_iter(&["83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?])?.next().unwrap().clone();
+        let original_head = repo
+            .metadata_iter(&["83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?])?
+            .next()
+            .unwrap()
+            .clone();
 
         Command::new("git")
             .arg("-C")

@@ -132,6 +132,7 @@ impl GuiInner {
         if self.pending_view_state != self.last_requsted_view_state {
             self.tx.send(AppRequest::GetCommitGraph {
                 expected_repo: self.repo_state.repo.clone(),
+                viewer_id: "GUI".into(),
                 view_state: self.pending_view_state.clone(),
             })?;
             self.last_requsted_view_state = self.pending_view_state.clone();

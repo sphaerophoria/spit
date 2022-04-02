@@ -1,4 +1,9 @@
-use crate::git::{build_git_history_graph, Branch, BranchId, Commit, HistoryGraph, ObjectId, Repo};
+mod priority_queue;
+
+use crate::{
+    app::priority_queue::PriorityQueue,
+    git::{build_git_history_graph, Branch, BranchId, Commit, HistoryGraph, ObjectId, Repo},
+};
 
 use anyhow::{bail, Context, Error, Result};
 use log::{debug, error, info};
@@ -43,6 +48,8 @@ pub enum AppRequest {
     OpenRepo(PathBuf),
     GetCommitGraph {
         expected_repo: PathBuf,
+        // Unique ID from the UI for preempting
+        viewer_id: String,
         view_state: ViewState,
     },
     Refresh,
@@ -63,7 +70,7 @@ pub enum AppEvent {
 
 pub struct App {
     tx: Sender<AppEvent>,
-    rx: Receiver<AppRequest>,
+    rx: PriorityQueue,
     notifier: RecommendedWatcher,
     repo: Option<Repo>,
 }
@@ -76,7 +83,7 @@ impl App {
     ) -> Result<App> {
         Ok(App {
             tx: event_tx,
-            rx: request_rx,
+            rx: PriorityQueue::new(request_rx),
             notifier: spawn_watcher(request_tx)?,
             repo: None,
         })
@@ -169,6 +176,7 @@ impl App {
             AppRequest::GetCommitGraph {
                 expected_repo,
                 view_state,
+                ..
             } => match &mut self.repo {
                 Some(repo) => {
                     if repo.git_dir() != expected_repo {
