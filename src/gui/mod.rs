@@ -1,3 +1,7 @@
+mod tristate_checkbox;
+
+use tristate_checkbox::TristateCheckbox;
+
 use crate::{
     app::{AppEvent, AppRequest, RepoState, ViewState},
     git::{
@@ -419,7 +423,7 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
 fn render_side_panel(
     ui: &mut Ui,
     branches: &[Branch],
-    _view_state: &ViewState,
+    view_state: &ViewState,
     pending_view_state: &mut ViewState,
 ) {
     let mut new_selected = Vec::with_capacity(pending_view_state.selected_branches.len());
@@ -428,12 +432,13 @@ fn render_side_panel(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for branch in branches.iter() {
+                let real_state = view_state.selected_branches.contains(&branch.id);
                 let mut selected = pending_view_state.selected_branches.contains(&branch.id);
 
                 let (color, s) = branch_id_to_message_and_color(branch.id.clone());
                 let text = RichText::new(s).color(color);
 
-                ui.checkbox(&mut selected, text);
+                TristateCheckbox::new(&real_state, &mut selected, text).ui(ui);
                 if selected {
                     new_selected.push(branch.id.clone());
                 }
