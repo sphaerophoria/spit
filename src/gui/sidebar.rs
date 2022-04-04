@@ -1,5 +1,5 @@
 use crate::{
-    app::{RepoState, ViewState},
+    app::{RemoteState, RepoState, ViewState},
     git::{Reference, ReferenceId, SortType},
     gui::{reference_richtext, tristate_checkbox::TristateCheckbox, try_set_clipboard},
 };
@@ -18,6 +18,7 @@ pub(super) enum SidebarAction {
 #[derive(Default)]
 pub(super) struct Sidebar {
     repo_state: Arc<RepoState>,
+    remote_state: RemoteState,
     filter_text: String,
     filtered_refs: BTreeSet<ReferenceId>,
 }
@@ -29,6 +30,9 @@ impl Sidebar {
 
     pub(super) fn update_with_repo_state(&mut self, repo_state: Arc<RepoState>) {
         self.repo_state = repo_state;
+        if self.repo_state.repo != self.remote_state.repo {
+            self.remote_state = Default::default();
+        }
         self.update_filters();
     }
 

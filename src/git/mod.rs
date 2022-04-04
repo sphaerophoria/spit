@@ -133,6 +133,12 @@ pub struct Reference {
     pub(crate) head: ObjectId,
 }
 
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct RemoteRef {
+    pub(crate) remote: String,
+    pub(crate) ref_name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub(crate) metadata: CommitMetadata,

@@ -1,5 +1,6 @@
 mod commit_log;
 mod commit_view;
+mod download_dialog;
 mod editor;
 mod sidebar;
 mod tristate_checkbox;
@@ -8,6 +9,7 @@ pub use editor::Editor;
 
 use commit_log::CommitLog;
 use commit_view::{CommitView, CommitViewAction};
+use download_dialog::DownloadDialog;
 use sidebar::{Sidebar, SidebarAction};
 
 use crate::{
@@ -47,6 +49,7 @@ struct GuiInner {
     commit_view: CommitView,
     commit_log: CommitLog,
     sidebar: Sidebar,
+    download_dialog: DownloadDialog,
     clipboard: ClipboardContext,
 }
 
@@ -68,6 +71,7 @@ impl GuiInner {
             commit_view: CommitView::new(),
             commit_log: Default::default(),
             sidebar: Sidebar::new(),
+            download_dialog: DownloadDialog::new(),
             clipboard: ClipboardContext::new()
                 .map_err(|_| Error::msg("Failed to construct clipboard"))?,
         })
@@ -81,6 +85,7 @@ impl GuiInner {
         self.pending_view_state = Default::default();
         self.last_requsted_view_state = Default::default();
         self.commit_cache = Cache::new(Self::MAX_CACHED_COMMITS);
+        self.download_dialog.reset();
         self.commit_view.reset();
         self.commit_log.reset();
     }
@@ -128,10 +133,20 @@ impl GuiInner {
                 self.sidebar.update_with_repo_state(Arc::clone(&repo_state));
                 self.commit_log
                     .update_with_repo_state(Arc::clone(&repo_state));
+
+                if repo_state.repo != self.repo_state.repo {
+                    self.download_dialog.update_remote_state(Default::default());
+                }
+
                 if *self.repo_state != *repo_state {
                     self.repo_state = repo_state;
                     // Reset requested view state to force a re-request
                     self.last_requsted_view_state = Default::default();
+                }
+            }
+            AppEvent::RemoteStateUpdated(remote_state) => {
+                if remote_state.repo == self.repo_state.repo {
+                    self.download_dialog.update_remote_state(remote_state);
                 }
             }
             AppEvent::Error(e) => {
@@ -280,8 +295,19 @@ impl GuiInner {
 
     fn update(&mut self, ctx: &egui::Context) -> Result<()> {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            if let Some(repo) = render_toolbar(ui, &mut self.show_console) {
-                self.open_repo(repo);
+            match render_toolbar(ui, &mut self.show_console) {
+                ToolbarAction::OpenRepo(repo) => {
+                    self.open_repo(repo);
+                }
+                ToolbarAction::ShowDownloadDialog => {
+                    self.download_dialog.set_open(true);
+                    if let Err(e) = self.tx.send(AppRequest::UpdateRemotes {
+                        expected_repo: self.repo_state.repo.clone(),
+                    }) {
+                        error!("Failed to request remote references: {}", e);
+                    };
+                }
+                ToolbarAction::None => (),
             }
         });
 
@@ -328,6 +354,15 @@ impl GuiInner {
                     .show(ui, &self.commit_cache, &mut self.clipboard)
             })
             .inner;
+
+        if let Some(remote_ref) = self.download_dialog.show(ctx) {
+            self.tx
+                .send(AppRequest::FetchRemoteRef(
+                    self.repo_state.repo.clone(),
+                    remote_ref,
+                ))
+                .context("Failed to send remote fetch request")?;
+        }
 
         match sidebar_action {
             SidebarAction::Checkout(id) => {
@@ -395,13 +430,21 @@ impl App for Gui {
     }
 }
 
-fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf> {
-    let mut ret = None;
+enum ToolbarAction {
+    OpenRepo(PathBuf),
+    ShowDownloadDialog,
+    None,
+}
+
+fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> ToolbarAction {
+    let mut ret = ToolbarAction::None;
     ui.horizontal(|ui| {
         let response = ui.button("Open repo");
         if response.clicked() {
             let repo = rfd::FileDialog::new().pick_folder();
-            ret = repo;
+            if let Some(v) = repo {
+                ret = ToolbarAction::OpenRepo(v);
+            }
         }
 
         let button_text = if *show_console {
@@ -413,6 +456,10 @@ fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf>
         let response = ui.button(button_text);
         if response.clicked() {
             *show_console = !*show_console;
+        }
+
+        if ui.button("Download references").clicked() {
+            ret = ToolbarAction::ShowDownloadDialog;
         }
     });
     ret

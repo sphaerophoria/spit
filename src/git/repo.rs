@@ -1,7 +1,7 @@
 use crate::{
     git::{
         decompress, pack::Pack, Commit, CommitMetadata, Diff, DiffContent, DiffFileHeader,
-        DiffMetadata, ObjectId, Reference, ReferenceId,
+        DiffMetadata, ObjectId, Reference, ReferenceId, RemoteRef,
     },
     util::Timer,
 };
@@ -16,6 +16,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -282,6 +283,29 @@ impl Repo {
             .collect::<Result<_>>()
     }
 
+    pub(crate) fn remote_refs(&self) -> Result<Vec<RemoteRef>> {
+        let mut ret = Vec::new();
+        for remote_name in &self.git2_repo.remotes()? {
+            let remote_name = match remote_name {
+                Some(v) => v,
+                None => {
+                    error!("Unexpected null remote name");
+                    continue;
+                }
+            };
+
+            let remote_refs = match get_refs_for_remote(&self.git_dir, remote_name) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to get refs for remote {}: {}", remote_name, e);
+                    continue;
+                }
+            };
+            ret.extend(remote_refs.into_iter());
+        }
+        Ok(ret)
+    }
+
     pub(crate) fn find_reference_commit_id(&self, id: &ReferenceId) -> Result<ObjectId> {
         let ref_name = id.reference_string()?;
         Ok(self
@@ -396,6 +420,45 @@ fn git2_branch_object(branch: git2::Branch) -> Result<ObjectId> {
         .target()
         .ok_or_else(|| Error::msg("Failed to resolve reference"))?
         .into())
+}
+
+fn get_refs_for_remote(git_path: &Path, remote_name: &str) -> Result<Vec<RemoteRef>> {
+    // NOTE: Github does not have as wide libgit2 support as the git CLI client due to libssh2 not
+    // supporting SHA-2. This means that ssh keys that work with the git client will not work with
+    // libgit2, which is an annoying and unexpected change.
+    //
+    // Use the git command line and parse the output
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(git_path)
+        .args(&["ls-remote", "-q", remote_name])
+        .output()?;
+
+    if !output.status.success() {
+        let err = std::str::from_utf8(&output.stderr).unwrap_or("Failed to parse stderr");
+        return Err(Error::msg(format!(
+            "ls-remote failed for {}: {}",
+            remote_name, err
+        )));
+    }
+
+    let output_str = std::str::from_utf8(&output.stdout)?;
+    output_str
+        .lines()
+        .map(|l| {
+            let mut line_iter = l.split('\t');
+
+            let ref_name = line_iter
+                .nth(1)
+                .context("Could not get reference id for remote ref")?
+                .to_string();
+
+            Ok(RemoteRef {
+                remote: remote_name.to_string(),
+                ref_name,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 fn build_sorted_metadata_indicies<'a>(

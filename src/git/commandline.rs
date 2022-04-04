@@ -1,4 +1,4 @@
-use crate::git::{Identifier, ObjectId, ReferenceId};
+use crate::git::{Identifier, ObjectId, ReferenceId, RemoteRef};
 use anyhow::{bail, Error, Result};
 
 fn escaped_string(s: &str) -> String {
@@ -42,4 +42,13 @@ pub(crate) fn cherry_pick(id: &ObjectId) -> String {
 
 pub(crate) fn merge(id: &Identifier) -> String {
     format!("git merge {}", escaped_string(&id.to_string()))
+}
+
+pub(crate) fn fetch_remote_ref(remote_ref: &RemoteRef) -> String {
+    let ref_escaped = escaped_string(&remote_ref.ref_name);
+    let remote_escaped = escaped_string(&remote_ref.remote);
+    format!(
+        "git fetch {} {}:refs/remotes/{}/{}",
+        remote_escaped, ref_escaped, remote_escaped, ref_escaped
+    )
 }

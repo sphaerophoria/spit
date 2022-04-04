@@ -4,7 +4,7 @@ use crate::{
     app::priority_queue::PriorityQueue,
     git::{
         self, build_git_history_graph, Commit, Diff, HistoryGraph, Identifier, ObjectId, Reference,
-        ReferenceId, Repo, SortType,
+        ReferenceId, RemoteRef, Repo, SortType,
     },
 };
 
@@ -21,6 +21,12 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+#[derive(Default, PartialEq, Eq)]
+pub struct RemoteState {
+    pub(crate) repo: PathBuf,
+    pub(crate) references: Vec<RemoteRef>,
+}
 
 #[derive(Clone, Eq, PartialEq, Default)]
 pub struct RepoState {
@@ -80,11 +86,16 @@ pub enum AppRequest {
     CherryPick(RepoState, ObjectId),
     Merge(RepoState, Identifier),
     ExecuteGitCommand(RepoState, String),
+    UpdateRemotes {
+        expected_repo: PathBuf,
+    },
+    FetchRemoteRef(PathBuf, RemoteRef),
 }
 
 pub enum AppEvent {
     OutputLogged(String),
     RepoStateUpdated(RepoState),
+    RemoteStateUpdated(RemoteState),
     CommitGraphFetched(ViewState, HistoryGraph),
     CommitFetched {
         repo: PathBuf,
@@ -346,6 +357,52 @@ impl App {
                     .send(AppEvent::RepoStateUpdated(repo_state))
                     .context("Failed to send response branches")?;
             }
+            AppRequest::UpdateRemotes { expected_repo } => {
+                let repo = self
+                    .repo
+                    .as_mut()
+                    .ok_or_else(|| Error::msg("Update remotes requested without valid repo"))?;
+
+                if repo.repo_root() != expected_repo {
+                    bail!(
+                        "Current repo does not match expected repo: {}, {}",
+                        repo.repo_root().display(),
+                        expected_repo.display()
+                    );
+                }
+
+                let references = repo
+                    .remote_refs()
+                    .context("Failed to retrieve remote references")?;
+
+                self.tx
+                    .send(AppEvent::RemoteStateUpdated(RemoteState {
+                        repo: expected_repo,
+                        references,
+                    }))
+                    .context("Failed to send update remotes")?;
+            }
+            AppRequest::FetchRemoteRef(expected_repo, remote_ref) => {
+                let repo = self
+                    .repo
+                    .as_mut()
+                    .ok_or_else(|| Error::msg("Update remotes requested without valid repo"))?;
+
+                if repo.repo_root() != expected_repo {
+                    bail!(
+                        "Current repo does not match expected repo: {}, {}",
+                        repo.repo_root().display(),
+                        expected_repo.display()
+                    );
+                }
+
+                let repo_state = self.get_repo_state()?;
+
+                self.execute_command(
+                    &repo_state,
+                    &git::commandline::fetch_remote_ref(&remote_ref),
+                )?;
+            }
         }
 
         Ok(())
@@ -363,15 +420,15 @@ fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
         id: ReferenceId::head(),
     })];
     branches.extend(repo.branches().context("Failed to retrieve branches")?);
-    let mut branches = branches.into_iter().collect::<Result<Vec<_>>>()?;
+    let mut references = branches.into_iter().collect::<Result<Vec<_>>>()?;
     let head = repo.resolve_reference(&ReferenceId::head())?;
     let tags = repo.tags().context("Failed to retrieve tags")?;
-    branches.extend(tags);
+    references.extend(tags);
 
     Ok(RepoState {
         repo: repo.repo_root().to_path_buf(),
         head,
-        references: branches,
+        references,
     })
 }
 
