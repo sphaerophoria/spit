@@ -47,7 +47,7 @@ impl PriorityQueue {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{app::ViewState, git::BranchId};
+    use crate::{app::ViewState, git::ReferenceId};
     use std::sync::mpsc;
 
     macro_rules! is_enum_variant {
@@ -92,28 +92,28 @@ mod test {
             expected_repo: "1".into(),
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
-                selected_branches: vec![BranchId::Head],
+                selected_references: vec![ReferenceId::head()],
             },
         })?;
         tx.send(AppRequest::GetCommitGraph {
             expected_repo: "1".into(),
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
-                selected_branches: vec![],
+                selected_references: vec![],
             },
         })?;
         tx.send(AppRequest::GetCommitGraph {
             expected_repo: "1".into(),
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
-                selected_branches: vec![BranchId::Local("master".into())],
+                selected_references: vec![ReferenceId::LocalBranch("master".into())],
             },
         })?;
 
         if let AppRequest::GetCommitGraph { view_state, .. } = q.recv()? {
             assert_eq!(
-                view_state.selected_branches,
-                &[BranchId::Local("master".into())]
+                view_state.selected_references,
+                &[ReferenceId::LocalBranch("master".into())]
             )
         } else {
             assert!(false);

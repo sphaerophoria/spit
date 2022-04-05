@@ -1,7 +1,7 @@
 use crate::{
     git::{
-        decompress, pack::Pack, Branch, BranchId, Commit, CommitMetadata, Diff, DiffContent,
-        DiffFileHeader, ObjectId,
+        decompress, pack::Pack, Branch, Commit, CommitMetadata, Diff, DiffContent, DiffFileHeader,
+        ObjectId, ReferenceId,
     },
     util::Timer,
 };
@@ -215,8 +215,8 @@ impl Repo {
                 .ok_or_else(|| Error::msg("Invalid branch name"))?
                 .to_string();
             let id = match t {
-                git2::BranchType::Local => BranchId::Local(name),
-                git2::BranchType::Remote => BranchId::Remote(name),
+                git2::BranchType::Local => ReferenceId::LocalBranch(name),
+                git2::BranchType::Remote => ReferenceId::RemoteBranch(name),
             };
             Ok(Branch {
                 id,
@@ -225,32 +225,27 @@ impl Repo {
         }))
     }
 
-    pub(crate) fn find_branch_head(&self, id: &BranchId) -> Result<ObjectId> {
-        let head = match id {
-            BranchId::Head => self.head()?,
-            BranchId::Local(name) => {
-                git2_branch_object(self.git2_repo.find_branch(name, git2::BranchType::Local)?)?
-            }
-            BranchId::Remote(name) => {
-                git2_branch_object(self.git2_repo.find_branch(name, git2::BranchType::Remote)?)?
-            }
-        };
-
-        Ok(head)
+    pub(crate) fn find_reference_object(&self, id: &ReferenceId) -> Result<ObjectId> {
+        let ref_name = id.reference_string()?;
+        Ok(self
+            .git2_repo
+            .find_reference(&ref_name)?
+            .resolve()?
+            .target()
+            .ok_or_else(|| Error::msg("Failed to resolve reference"))?
+            .into())
     }
 
     pub(crate) fn git_dir(&self) -> &Path {
         &self.repo_root
     }
 
-    fn head(&self) -> Result<ObjectId> {
-        Ok(self
-            .git2_repo
-            .head()?
+    pub(crate) fn resolve_reference(&self, id: &ReferenceId) -> Result<ReferenceId> {
+        let ref_name = id.reference_string()?;
+        self.git2_repo
+            .find_reference(&ref_name)?
             .resolve()?
-            .target()
-            .ok_or_else(|| Error::msg("Failed to resolve head reference"))?
-            .into())
+            .try_into()
     }
 
     pub(crate) fn diff(&self, id1: &ObjectId, id2: &ObjectId) -> Result<Diff> {
@@ -610,19 +605,19 @@ mod test {
             branches,
             &[
                 Branch {
-                    id: BranchId::Local("master".to_string()),
+                    id: ReferenceId::LocalBranch("master".to_string()),
                     head: "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?
                 },
                 Branch {
-                    id: BranchId::Local("test_branch".to_string()),
+                    id: ReferenceId::LocalBranch("test_branch".to_string()),
                     head: "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?
                 },
                 Branch {
-                    id: BranchId::Remote("origin/master".to_string()),
+                    id: ReferenceId::RemoteBranch("origin/master".to_string()),
                     head: "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?
                 },
                 Branch {
-                    id: BranchId::Remote("origin/test_branch".to_string()),
+                    id: ReferenceId::RemoteBranch("origin/test_branch".to_string()),
                     head: "760e2389d32e245213eaf71d88e314fa63709c79".parse()?
                 },
             ]
@@ -664,13 +659,14 @@ mod test {
 
         let repo = Repo::new(git_dir.path().to_path_buf())?;
 
-        let head = repo.find_branch_head(&BranchId::Local("test_branch".into()))?;
+        let head = repo.find_reference_object(&ReferenceId::LocalBranch("test_branch".into()))?;
         assert_eq!(head, "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?);
 
-        let head = repo.find_branch_head(&BranchId::Head)?;
+        let head = repo.find_reference_object(&ReferenceId::head())?;
         assert_eq!(head, "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?);
 
-        let head = repo.find_branch_head(&BranchId::Remote("origin/master".into()))?;
+        let head =
+            repo.find_reference_object(&ReferenceId::RemoteBranch("origin/master".into()))?;
         assert_eq!(head, "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?);
         Ok(())
     }
@@ -693,7 +689,7 @@ mod test {
             .args(&["commit", "-m", "testing", "--allow-empty"])
             .output()?;
 
-        let object_id = repo.find_branch_head(&BranchId::Head)?;
+        let object_id = repo.find_reference_object(&ReferenceId::head())?;
         let new_head = repo.metadata_iter(&[object_id])?.next().unwrap();
 
         assert_ne!(original_head.id, new_head.id);

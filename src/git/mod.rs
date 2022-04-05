@@ -8,6 +8,7 @@ pub(crate) use graph::{build_git_history_graph, HistoryGraph};
 pub(crate) use object_id::ObjectId;
 pub(crate) use repo::Repo;
 
+use anyhow::{Error, Result};
 use chrono::{DateTime, Utc};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -23,25 +24,94 @@ pub(crate) struct CommitMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum BranchId {
-    Head,
-    Local(String),
-    Remote(String),
+pub enum ReferenceId {
+    Symbolic(String),
+    LocalBranch(String),
+    RemoteBranch(String),
+    Unknown,
 }
 
-impl ToString for BranchId {
-    fn to_string(&self) -> String {
+impl Default for ReferenceId {
+    fn default() -> Self {
+        ReferenceId::Unknown
+    }
+}
+
+impl ReferenceId {
+    pub(crate) fn head() -> ReferenceId {
+        ReferenceId::Symbolic("HEAD".to_string())
+    }
+
+    pub(crate) fn reference_string(&self) -> Result<String> {
+        let s = match self {
+            ReferenceId::Symbolic(name) => name.clone(),
+            ReferenceId::LocalBranch(name) => format!("refs/heads/{}", name),
+            ReferenceId::RemoteBranch(name) => format!("refs/remotes/{}", name),
+            ReferenceId::Unknown => {
+                return Err(Error::msg("Cannot find object id of unknown reference"));
+            }
+        };
+
+        Ok(s)
+    }
+}
+
+impl fmt::Display for ReferenceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BranchId::Head => "HEAD".to_string(),
-            BranchId::Remote(name) => name.clone(),
-            BranchId::Local(name) => name.clone(),
+            ReferenceId::Symbolic(name)
+            | ReferenceId::RemoteBranch(name)
+            | ReferenceId::LocalBranch(name) => f.write_str(name)?,
+            ReferenceId::Unknown => f.write_str("Unknown")?,
         }
+
+        Ok(())
+    }
+}
+
+impl<'a> TryFrom<git2::Reference<'a>> for ReferenceId {
+    type Error = Error;
+    fn try_from(r: git2::Reference<'a>) -> Result<Self> {
+        TryFrom::try_from(&r)
+    }
+}
+
+impl<'a> TryFrom<&git2::Reference<'a>> for ReferenceId {
+    type Error = Error;
+    fn try_from(r: &git2::Reference<'a>) -> Result<Self> {
+        let name = r
+            .name()
+            .ok_or_else(|| Error::msg("Branch name is invalid"))?;
+        let id = if r.is_branch() {
+            if r.is_remote() {
+                const REMOTES_START: &str = "refs/remotes/";
+                if !name.starts_with(REMOTES_START) {
+                    return Err(Error::msg(format!(
+                        "{} does not start with {}",
+                        name, REMOTES_START
+                    )));
+                }
+                ReferenceId::RemoteBranch(name[REMOTES_START.len()..].to_string())
+            } else {
+                const LOCAL_START: &str = "refs/heads/";
+                if !name.starts_with(LOCAL_START) {
+                    return Err(Error::msg(format!(
+                        "{} does not start with {}",
+                        name, LOCAL_START
+                    )));
+                }
+                ReferenceId::LocalBranch(name[LOCAL_START.len()..].to_string())
+            }
+        } else {
+            ReferenceId::Unknown
+        };
+        Ok(id)
     }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, PartialOrd, Ord)]
 pub struct Branch {
-    pub(crate) id: BranchId,
+    pub(crate) id: ReferenceId,
     pub(crate) head: ObjectId,
 }
 

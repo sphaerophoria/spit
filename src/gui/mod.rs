@@ -6,7 +6,7 @@ use crate::{
     app::{AppEvent, AppRequest, RepoState, ViewState},
     git::{
         graph::{Edge, GraphPoint},
-        Branch, BranchId, Commit, Diff, DiffContent, HistoryGraph, ObjectId,
+        Commit, Diff, DiffContent, HistoryGraph, ObjectId, ReferenceId,
     },
     util::Cache,
 };
@@ -14,7 +14,7 @@ use crate::{
 use anyhow::{Context, Result};
 use eframe::{
     egui::{
-        self, text::LayoutJob, Color32, Pos2, Rect, Response, RichText, ScrollArea, Sense,
+        self, text::LayoutJob, Color32, Pos2, Rect, Response, RichText, ScrollArea, Sense, Stroke,
         TextEdit, TextFormat, TextStyle, Ui, Widget,
     },
     epi,
@@ -115,7 +115,7 @@ impl GuiInner {
             AppEvent::RepoStateUpdated(repo_state) => {
                 if self.repo_state.repo != repo_state.repo {
                     self.reset();
-                    self.pending_view_state.selected_branches = vec![BranchId::Head];
+                    self.pending_view_state.selected_references = vec![ReferenceId::head()];
                 }
 
                 self.pending_view_state.update_with_repo_state(&repo_state);
@@ -245,7 +245,7 @@ impl GuiInner {
             .show(ctx, |ui| {
                 render_side_panel(
                     ui,
-                    &self.repo_state.branches,
+                    &self.repo_state,
                     &self.view_state,
                     &mut self.pending_view_state,
                 )
@@ -422,21 +422,20 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
 
 fn render_side_panel(
     ui: &mut Ui,
-    branches: &[Branch],
+    repo_state: &RepoState,
     view_state: &ViewState,
     pending_view_state: &mut ViewState,
 ) {
-    let mut new_selected = Vec::with_capacity(pending_view_state.selected_branches.len());
+    let mut new_selected = Vec::with_capacity(pending_view_state.selected_references.len());
 
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for branch in branches.iter() {
-                let real_state = view_state.selected_branches.contains(&branch.id);
-                let mut selected = pending_view_state.selected_branches.contains(&branch.id);
+            for branch in repo_state.branches.iter() {
+                let real_state = view_state.selected_references.contains(&branch.id);
+                let mut selected = pending_view_state.selected_references.contains(&branch.id);
 
-                let (color, s) = branch_id_to_message_and_color(branch.id.clone());
-                let text = RichText::new(s).color(color);
+                let text = reference_richtext(&branch.id, repo_state);
 
                 TristateCheckbox::new(&real_state, &mut selected, text).ui(ui);
                 if selected {
@@ -445,14 +444,31 @@ fn render_side_panel(
             }
         });
 
-    pending_view_state.selected_branches = new_selected;
+    pending_view_state.selected_references = new_selected;
 }
 
-fn branch_id_to_message_and_color(id: BranchId) -> (Color32, String) {
+fn reference_richtext(id: &ReferenceId, repo_state: &RepoState) -> RichText {
+    let color = reference_color(id);
+
+    let text = RichText::new(id.to_string()).color(color);
+
+    if reference_underline(id, repo_state) {
+        text.underline()
+    } else {
+        text
+    }
+}
+
+fn reference_underline(id: &ReferenceId, repo_state: &RepoState) -> bool {
+    repo_state.head == *id
+}
+
+fn reference_color(id: &ReferenceId) -> Color32 {
     match id {
-        BranchId::Head => (Color32::LIGHT_BLUE, "HEAD".into()),
-        BranchId::Local(name) => (Color32::LIGHT_GREEN, name),
-        BranchId::Remote(name) => (Color32::LIGHT_RED, name),
+        ReferenceId::Symbolic(_) => Color32::LIGHT_BLUE,
+        ReferenceId::LocalBranch(_) => Color32::LIGHT_GREEN,
+        ReferenceId::RemoteBranch(_) => Color32::LIGHT_RED,
+        ReferenceId::Unknown => Color32::RED,
     }
 }
 
@@ -574,7 +590,7 @@ mod commit_log {
         ui.painter().circle_filled(node_pos, 3.0, stroke.color);
     }
 
-    fn build_branch_id_lookup(state: &RepoState) -> HashMap<ObjectId, Vec<BranchId>> {
+    fn build_branch_id_lookup(state: &RepoState) -> HashMap<ObjectId, Vec<ReferenceId>> {
         let mut ret = HashMap::new();
         for branch in &state.branches {
             let entry = ret.entry(branch.head.clone()).or_insert(vec![]);
@@ -644,9 +660,20 @@ mod commit_log {
 
                     if let Some(ids) = branch_id_lookup.get(&node.id) {
                         for id in ids {
-                            let (color, mut name) = branch_id_to_message_and_color(id.clone());
-                            name.push(' ');
-                            job.append(&name, 0.0, TextFormat::simple(font.clone(), color));
+                            let name = id.to_string();
+                            let color = reference_color(id);
+                            let underline = reference_underline(id, repo_state);
+                            let mut textformat = TextFormat::simple(font.clone(), color);
+                            if underline {
+                                textformat.underline = Stroke::new(2.0, color);
+                            }
+
+                            job.append(&name, 0.0, textformat);
+                            job.append(
+                                " ",
+                                0.0,
+                                TextFormat::simple(font.clone(), style.visuals.text_color()),
+                            );
                         }
                     }
 

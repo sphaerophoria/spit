@@ -2,7 +2,9 @@ mod priority_queue;
 
 use crate::{
     app::priority_queue::PriorityQueue,
-    git::{build_git_history_graph, Branch, BranchId, Commit, Diff, HistoryGraph, ObjectId, Repo},
+    git::{
+        build_git_history_graph, Branch, Commit, Diff, HistoryGraph, ObjectId, ReferenceId, Repo,
+    },
 };
 
 use anyhow::{bail, Context, Error, Result};
@@ -21,25 +23,26 @@ use std::{
 #[derive(Clone, Eq, PartialEq, Default)]
 pub struct RepoState {
     pub(crate) repo: PathBuf,
+    pub(crate) head: ReferenceId,
     pub(crate) branches: Vec<Branch>,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ViewState {
-    pub(crate) selected_branches: Vec<BranchId>,
+    pub(crate) selected_references: Vec<ReferenceId>,
 }
 
 impl ViewState {
     pub(crate) fn update_with_repo_state(&mut self, repo_state: &RepoState) {
-        let selected_branches = std::mem::take(&mut self.selected_branches);
-        let had_any_branches = !selected_branches.is_empty();
-        self.selected_branches = selected_branches
+        let selected_references = std::mem::take(&mut self.selected_references);
+        let had_any_branches = !selected_references.is_empty();
+        self.selected_references = selected_references
             .into_iter()
             .filter(|selected| repo_state.branches.iter().any(|b| &b.id == selected))
             .collect();
 
-        if self.selected_branches.is_empty() && had_any_branches {
-            self.selected_branches = vec![BranchId::Head]
+        if self.selected_references.is_empty() && had_any_branches {
+            self.selected_references = vec![ReferenceId::head()]
         }
     }
 }
@@ -223,9 +226,9 @@ impl App {
                     }
 
                     let heads = view_state
-                        .selected_branches
+                        .selected_references
                         .iter()
-                        .map(|id| repo.find_branch_head(id))
+                        .map(|id| repo.find_reference_object(id))
                         .collect::<Result<Vec<_>>>()?;
 
                     let graph = build_git_history_graph(repo, &heads)?;
@@ -258,14 +261,16 @@ impl App {
 
 fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
     let mut branches = vec![Ok(Branch {
-        head: repo.find_branch_head(&BranchId::Head)?,
-        id: BranchId::Head,
+        head: repo.find_reference_object(&ReferenceId::head())?,
+        id: ReferenceId::head(),
     })];
     branches.extend(repo.branches().context("Failed to retrieve branches")?);
     let branches = branches.into_iter().collect::<Result<_>>()?;
+    let head = repo.resolve_reference(&ReferenceId::head())?;
 
     Ok(RepoState {
         repo: repo.git_dir().to_path_buf(),
+        head,
         branches,
     })
 }
@@ -336,31 +341,35 @@ mod test {
     #[test]
     fn view_state_deleted_branch() -> Result<()> {
         let mut view_state = ViewState {
-            selected_branches: vec![
-                BranchId::Head,
-                BranchId::Remote("Test".to_string()),
-                BranchId::Local("Test".to_string()),
+            selected_references: vec![
+                ReferenceId::head(),
+                ReferenceId::RemoteBranch("Test".to_string()),
+                ReferenceId::LocalBranch("Test".to_string()),
             ],
         };
 
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
+            head: ReferenceId::Unknown,
             branches: vec![
                 Branch {
-                    id: BranchId::Head,
+                    id: ReferenceId::head(),
                     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
                 },
                 Branch {
-                    id: BranchId::Remote("Test".to_string()),
+                    id: ReferenceId::RemoteBranch("Test".to_string()),
                     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
                 },
             ],
         });
 
-        assert_eq!(view_state.selected_branches.len(), 2);
+        assert_eq!(view_state.selected_references.len(), 2);
         assert_eq!(
-            view_state.selected_branches,
-            &[BranchId::Head, BranchId::Remote("Test".to_string())]
+            view_state.selected_references,
+            &[
+                ReferenceId::head(),
+                ReferenceId::RemoteBranch("Test".to_string())
+            ]
         );
         Ok(())
     }
@@ -368,19 +377,20 @@ mod test {
     #[test]
     fn view_state_preserve_no_selection() -> Result<()> {
         let mut view_state = ViewState {
-            selected_branches: vec![],
+            selected_references: vec![],
         };
 
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
+            head: ReferenceId::Unknown,
             branches: vec![Branch {
-                id: BranchId::Head,
+                id: ReferenceId::head(),
                 head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
             }],
         });
 
-        assert_eq!(view_state.selected_branches.len(), 0);
-        assert_eq!(view_state.selected_branches, &[]);
+        assert_eq!(view_state.selected_references.len(), 0);
+        assert_eq!(view_state.selected_references, &[]);
 
         Ok(())
     }
@@ -388,20 +398,21 @@ mod test {
     #[test]
     fn view_state_swap_to_head() -> Result<()> {
         let mut view_state = ViewState {
-            selected_branches: vec![BranchId::Local("master".into())],
+            selected_references: vec![ReferenceId::LocalBranch("master".into())],
         };
 
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
+            head: ReferenceId::Unknown,
             branches: vec![Branch {
-                id: BranchId::Head,
+                id: ReferenceId::head(),
                 head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
             }],
         });
 
         // Only selected branch remove, swap to HEAD
-        assert_eq!(view_state.selected_branches.len(), 1);
-        assert_eq!(view_state.selected_branches, &[BranchId::Head]);
+        assert_eq!(view_state.selected_references.len(), 1);
+        assert_eq!(view_state.selected_references, &[ReferenceId::head()]);
 
         Ok(())
     }
