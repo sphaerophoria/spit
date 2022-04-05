@@ -17,6 +17,7 @@ log = "0.4.16"
 git2 = "0.14.2"
 rfd = "0.8.1"
 notify = "4.0.17"
+shell-escape = "0.1.5"
 
 [dev-dependencies]
 tempfile = "3.3.0"

@@ -86,7 +86,7 @@ impl GuiInner {
 
     fn handle_event(&mut self, response: AppEvent) {
         match response {
-            AppEvent::CommandExecuted(s) => {
+            AppEvent::OutputLogged(s) => {
                 // FIXME: Rolling buffer
                 self.output.push(s);
             }
@@ -240,7 +240,7 @@ impl GuiInner {
                 );
             });
 
-        egui::SidePanel::right("sidebar")
+        let to_checkout = egui::SidePanel::right("sidebar")
             .resizable(true)
             .show(ctx, |ui| {
                 render_side_panel(
@@ -249,7 +249,8 @@ impl GuiInner {
                     &self.view_state,
                     &mut self.pending_view_state,
                 )
-            });
+            })
+            .inner;
 
         let missing_commits = egui::CentralPanel::default()
             .show(ctx, |ui| -> Vec<ObjectId> {
@@ -263,6 +264,11 @@ impl GuiInner {
             })
             .inner;
 
+        if let Some(to_checkout) = to_checkout {
+            self.tx
+                .send(AppRequest::Checkout(self.repo_state.clone(), to_checkout))
+                .context("Failed to send checkout request")?;
+        }
         self.request_missing_diff()?;
         self.request_missing_commits(missing_commits)?;
         self.request_pending_view_state()?;
@@ -425,8 +431,9 @@ fn render_side_panel(
     repo_state: &RepoState,
     view_state: &ViewState,
     pending_view_state: &mut ViewState,
-) {
+) -> Option<ReferenceId> {
     let mut new_selected = Vec::with_capacity(pending_view_state.selected_references.len());
+    let mut to_checkout = None;
 
     ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -437,7 +444,13 @@ fn render_side_panel(
 
                 let text = reference_richtext(&branch.id, repo_state);
 
-                TristateCheckbox::new(&real_state, &mut selected, text).ui(ui);
+                let response = TristateCheckbox::new(&real_state, &mut selected, text).ui(ui);
+                response.context_menu(|ui| {
+                    if ui.button("Checkout").clicked() {
+                        to_checkout = Some(branch.id.clone());
+                        ui.close_menu();
+                    }
+                });
                 if selected {
                     new_selected.push(branch.id.clone());
                 }
@@ -445,6 +458,7 @@ fn render_side_panel(
         });
 
     pending_view_state.selected_references = new_selected;
+    to_checkout
 }
 
 fn reference_richtext(id: &ReferenceId, repo_state: &RepoState) -> RichText {
