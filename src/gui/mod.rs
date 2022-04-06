@@ -514,6 +514,7 @@ fn render_side_panel(
                 response.context_menu(|ui| {
                     if ui.button("Copy").clicked() {
                         try_set_clipboard(clipboard, branch.id.to_string());
+                        ui.close_menu();
                     }
 
                     if ui.button("Checkout").clicked() {
@@ -525,7 +526,6 @@ fn render_side_panel(
 
                     if ui.button("Delete").clicked() {
                         action = SidebarAction::Delete(branch.id.clone());
-                        ui.close_menu();
                         ui.close_menu();
                     }
                 });
