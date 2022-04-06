@@ -304,10 +304,12 @@ impl epi::App for Gui {
 
     fn setup(
         &mut self,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
         frame: &epi::Frame,
         _storage: Option<&dyn epi::Storage>,
     ) {
+        // Colors are unreadable in light mode, force dark mode for now
+        ctx.set_visuals(egui::Visuals::dark());
         // We need to spawn a thread to process events
         let inner = Arc::clone(&self.inner);
         let frame = frame.clone();
