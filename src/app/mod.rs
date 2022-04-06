@@ -3,7 +3,8 @@ mod priority_queue;
 use crate::{
     app::priority_queue::PriorityQueue,
     git::{
-        build_git_history_graph, Branch, Commit, Diff, HistoryGraph, ObjectId, ReferenceId, Repo,
+        self, build_git_history_graph, Branch, Commit, Diff, HistoryGraph, ObjectId, ReferenceId,
+        Repo,
     },
 };
 
@@ -66,6 +67,7 @@ pub enum AppRequest {
         to: ObjectId,
     },
     Checkout(RepoState, ReferenceId),
+    Delete(RepoState, ReferenceId),
     ExecuteGitCommand(RepoState, String),
 }
 
@@ -154,10 +156,10 @@ impl App {
     fn handle_req(&mut self, req: AppRequest) -> Result<()> {
         match req {
             AppRequest::Checkout(repo_state, reference_id) => {
-                let ref_unescaped = reference_id.to_string();
-                let ref_escaped = shell_escape::escape((&ref_unescaped).into());
-                let command = format!("git checkout {}", ref_escaped);
-                self.execute_command(&repo_state, &command)?;
+                self.execute_command(&repo_state, &git::commandline::checkout(&reference_id))?;
+            }
+            AppRequest::Delete(repo_state, reference_id) => {
+                self.execute_command(&repo_state, &git::commandline::delete(&reference_id)?)?;
             }
             AppRequest::ExecuteGitCommand(repo_state, cmd) => {
                 if !cmd.starts_with("git ") {

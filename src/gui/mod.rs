@@ -244,7 +244,7 @@ impl GuiInner {
                 );
             });
 
-        let to_checkout = egui::SidePanel::right("sidebar")
+        let sidebar_action = egui::SidePanel::right("sidebar")
             .resizable(true)
             .show(ctx, |ui| {
                 render_side_panel(
@@ -269,11 +269,20 @@ impl GuiInner {
             })
             .inner;
 
-        if let Some(to_checkout) = to_checkout {
-            self.tx
-                .send(AppRequest::Checkout(self.repo_state.clone(), to_checkout))
-                .context("Failed to send checkout request")?;
+        match sidebar_action {
+            SidebarAction::Checkout(id) => {
+                self.tx
+                    .send(AppRequest::Checkout(self.repo_state.clone(), id))
+                    .context("Failed to send checkout request")?;
+            }
+            SidebarAction::Delete(id) => {
+                self.tx
+                    .send(AppRequest::Delete(self.repo_state.clone(), id))
+                    .context("Failed to send delete request")?;
+            }
+            SidebarAction::None => (),
         }
+
         self.request_missing_diff()?;
         self.request_missing_commits(missing_commits)?;
         self.request_pending_view_state()?;
@@ -433,15 +442,21 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
     response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
 }
 
+enum SidebarAction {
+    Checkout(ReferenceId),
+    Delete(ReferenceId),
+    None,
+}
+
 fn render_side_panel(
     ui: &mut Ui,
     repo_state: &RepoState,
     view_state: &ViewState,
     pending_view_state: &mut ViewState,
     clipboard: &mut ClipboardContext,
-) -> Option<ReferenceId> {
+) -> SidebarAction {
     let mut new_selected = Vec::with_capacity(pending_view_state.selected_references.len());
-    let mut to_checkout = None;
+    let mut action = SidebarAction::None;
 
     ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -455,7 +470,13 @@ fn render_side_panel(
                 let response = TristateCheckbox::new(&real_state, &mut selected, text).ui(ui);
                 response.context_menu(|ui| {
                     if ui.button("Checkout").clicked() {
-                        to_checkout = Some(branch.id.clone());
+                        action = SidebarAction::Checkout(branch.id.clone());
+                        ui.close_menu();
+                    }
+
+                    if ui.button("Delete").clicked() {
+                        action = SidebarAction::Delete(branch.id.clone());
+                        ui.close_menu();
                         ui.close_menu();
                     }
 
@@ -472,7 +493,7 @@ fn render_side_panel(
         });
 
     pending_view_state.selected_references = new_selected;
-    to_checkout
+    action
 }
 
 fn reference_richtext(id: &ReferenceId, repo_state: &RepoState) -> RichText {

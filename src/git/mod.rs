@@ -1,3 +1,4 @@
+pub(crate) mod commandline;
 mod decompress;
 pub(crate) mod graph;
 mod object_id;
