@@ -48,6 +48,11 @@ impl ViewState {
     }
 }
 
+pub enum CheckoutItem {
+    Reference(ReferenceId),
+    Object(ObjectId),
+}
+
 pub enum AppRequest {
     OpenRepo(PathBuf),
     GetCommitGraph {
@@ -66,7 +71,7 @@ pub enum AppRequest {
         from: ObjectId,
         to: ObjectId,
     },
-    Checkout(RepoState, ReferenceId),
+    Checkout(RepoState, CheckoutItem),
     Delete(RepoState, ReferenceId),
     ExecuteGitCommand(RepoState, String),
 }
@@ -155,8 +160,8 @@ impl App {
 
     fn handle_req(&mut self, req: AppRequest) -> Result<()> {
         match req {
-            AppRequest::Checkout(repo_state, reference_id) => {
-                self.execute_command(&repo_state, &git::commandline::checkout(&reference_id))?;
+            AppRequest::Checkout(repo_state, checkout_item) => {
+                self.execute_command(&repo_state, &git::commandline::checkout(&checkout_item))?;
             }
             AppRequest::Delete(repo_state, reference_id) => {
                 self.execute_command(&repo_state, &git::commandline::delete(&reference_id)?)?;

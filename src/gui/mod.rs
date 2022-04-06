@@ -3,7 +3,7 @@ mod tristate_checkbox;
 use tristate_checkbox::TristateCheckbox;
 
 use crate::{
-    app::{AppEvent, AppRequest, RepoState, ViewState},
+    app::{AppEvent, AppRequest, CheckoutItem, RepoState, ViewState},
     git::{
         graph::{Edge, GraphPoint},
         Commit, Diff, DiffContent, HistoryGraph, ObjectId, ReferenceId,
@@ -162,19 +162,42 @@ impl GuiInner {
         Ok(())
     }
 
-    fn request_missing_commits(&mut self, missing_commits: Vec<ObjectId>) -> Result<()> {
-        for id in missing_commits {
-            if !self.outgoing_requests.contains(&id) {
-                debug!("Requesting commit {}", id);
+    fn request_commit(&mut self, id: ObjectId) -> Result<()> {
+        if !self.outgoing_requests.contains(&id) {
+            debug!("Requesting commit {}", id);
 
-                self.tx
-                    .send(AppRequest::GetCommit {
-                        expected_repo: self.repo_state.repo.clone(),
-                        id: id.clone(),
-                    })
-                    .context("Failed to request commit")?;
+            self.tx
+                .send(AppRequest::GetCommit {
+                    expected_repo: self.repo_state.repo.clone(),
+                    id: id.clone(),
+                })
+                .context("Failed to request commit")?;
 
-                self.outgoing_requests.insert(id);
+            self.outgoing_requests.insert(id);
+        }
+        Ok(())
+    }
+
+    fn request_checkout(&mut self, item: CheckoutItem) -> Result<()> {
+        self.tx
+            .send(AppRequest::Checkout(self.repo_state.clone(), item))
+            .context("Failed to send checkout request")?;
+
+        Ok(())
+    }
+
+    fn handle_commit_log_actions(
+        &mut self,
+        actions: Vec<commit_log::CommitLogAction>,
+    ) -> Result<()> {
+        for action in actions {
+            match action {
+                commit_log::CommitLogAction::FetchCommit(id) => {
+                    self.request_commit(id)?;
+                }
+                commit_log::CommitLogAction::CheckoutObject(id) => {
+                    self.request_checkout(CheckoutItem::Object(id))?;
+                }
             }
         }
         Ok(())
@@ -258,23 +281,22 @@ impl GuiInner {
             })
             .inner;
 
-        let missing_commits = egui::CentralPanel::default()
-            .show(ctx, |ui| -> Vec<ObjectId> {
+        let commit_log_actions = egui::CentralPanel::default()
+            .show(ctx, |ui| -> Vec<commit_log::CommitLogAction> {
                 commit_log::render(
                     ui,
                     &self.repo_state,
                     self.commit_graph.as_ref(),
                     &self.commit_cache,
                     &mut self.selected_commit,
+                    &mut self.clipboard,
                 )
             })
             .inner;
 
         match sidebar_action {
             SidebarAction::Checkout(id) => {
-                self.tx
-                    .send(AppRequest::Checkout(self.repo_state.clone(), id))
-                    .context("Failed to send checkout request")?;
+                self.request_checkout(CheckoutItem::Reference(id))?;
             }
             SidebarAction::Delete(id) => {
                 self.tx
@@ -285,7 +307,7 @@ impl GuiInner {
         }
 
         self.request_missing_diff()?;
-        self.request_missing_commits(missing_commits)?;
+        self.handle_commit_log_actions(commit_log_actions)?;
         self.request_pending_view_state()?;
 
         Ok(())
@@ -490,21 +512,21 @@ fn render_side_panel(
 
                 let response = TristateCheckbox::new(&real_state, &mut selected, text).ui(ui);
                 response.context_menu(|ui| {
+                    if ui.button("Copy").clicked() {
+                        try_set_clipboard(clipboard, branch.id.to_string());
+                    }
+
                     if ui.button("Checkout").clicked() {
                         action = SidebarAction::Checkout(branch.id.clone());
                         ui.close_menu();
                     }
 
+                    ui.separator();
+
                     if ui.button("Delete").clicked() {
                         action = SidebarAction::Delete(branch.id.clone());
                         ui.close_menu();
                         ui.close_menu();
-                    }
-
-                    if ui.button("Copy").clicked() {
-                        if let Err(e) = clipboard.set_contents(branch.id.to_string()) {
-                            error!("Failed to copy branch: {}", e);
-                        }
                     }
                 });
                 if selected {
@@ -539,6 +561,12 @@ fn reference_color(id: &ReferenceId) -> Color32 {
         ReferenceId::LocalBranch(_) => Color32::LIGHT_GREEN,
         ReferenceId::RemoteBranch(_) => Color32::LIGHT_RED,
         ReferenceId::Unknown => Color32::RED,
+    }
+}
+
+fn try_set_clipboard(clipboard: &mut ClipboardContext, s: String) {
+    if let Err(e) = clipboard.set_contents(s) {
+        error!("Failed to set clipboard contents: {}", e);
     }
 }
 
@@ -625,7 +653,7 @@ mod commit_log {
     }
 
     fn render_commit_message(ui: &mut Ui, message: LayoutJob, selected: bool) -> Response {
-        // Would be nice to use SeletableLable, but I couldn't find a way to prevent it from
+        // Would be nice to use SeletableLabel, but I couldn't find a way to prevent it from
         // wrapping
         let (pos, galley, message_response) = egui::Label::new(message)
             .wrap(false)
@@ -669,13 +697,19 @@ mod commit_log {
         ret
     }
 
+    pub(super) enum CommitLogAction {
+        FetchCommit(ObjectId),
+        CheckoutObject(ObjectId),
+    }
+
     pub(super) fn render(
         ui: &mut Ui,
         repo_state: &RepoState,
         commit_graph: Option<&HistoryGraph>,
         commit_cache: &Cache<ObjectId, Commit>,
         selected_commit: &mut Option<ObjectId>,
-    ) -> Vec<ObjectId> {
+        clipboard: &mut ClipboardContext,
+    ) -> Vec<CommitLogAction> {
         let commit_graph = match commit_graph {
             Some(v) => v,
             None => return Vec::new(),
@@ -700,7 +734,7 @@ mod commit_log {
 
                 let converter = PositionConverter::new(ui, row_height, row_range.clone());
 
-                let mut missing = Vec::new();
+                let mut actions = Vec::new();
 
                 let max_edge_x = render_edges(ui, &commit_graph.edges, &converter, &row_range);
                 let text_rect = converter.text_rect(max_edge_x);
@@ -755,7 +789,7 @@ mod commit_log {
                             .map(|v| v.to_string())
                             .unwrap_or_else(|| v.message.clone()),
                         None => {
-                            missing.push(node.id.clone());
+                            actions.push(CommitLogAction::FetchCommit(node.id.clone()));
                             node.id.to_string()
                         }
                     };
@@ -767,12 +801,27 @@ mod commit_log {
                     );
 
                     let selected = selected_commit.as_ref() == Some(&node.id);
-                    if render_commit_message(&mut text_ui, job, selected).clicked() {
+                    let commit_message_response =
+                        render_commit_message(&mut text_ui, job, selected);
+                    if commit_message_response.clicked() {
                         *selected_commit = Some(node.id.clone());
                     }
+
+                    commit_message_response.context_menu(|ui| {
+                        if ui.button("Copy hash").clicked() {
+                            try_set_clipboard(clipboard, node.id.to_string());
+                            ui.close_menu();
+                        }
+
+                        if ui.button("Checkout").clicked() {
+                            warn!("Unimplemented checkout");
+                            actions.push(CommitLogAction::CheckoutObject(node.id.clone()));
+                            ui.close_menu();
+                        }
+                    });
                 }
 
-                missing
+                actions
             })
             .inner
     }
