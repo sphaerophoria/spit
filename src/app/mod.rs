@@ -126,7 +126,7 @@ impl App {
 
                 let ref_unescaped = reference_id.to_string();
                 let ref_escaped = shell_escape::escape((&ref_unescaped).into());
-                let git_dir = repo.git_dir();
+                let git_dir = repo.repo_root();
 
                 let command = format!("git checkout {}", ref_escaped);
 
@@ -154,7 +154,7 @@ impl App {
                     None => bail!("Invalid repo"),
                 };
 
-                let git_dir = repo.git_dir();
+                let git_dir = repo.repo_root();
 
                 let cmd = cmd.trim();
 
@@ -170,7 +170,7 @@ impl App {
             }
             AppRequest::GetCommit { expected_repo, id } => match &mut self.repo {
                 Some(repo) => {
-                    if repo.git_dir() != expected_repo {
+                    if repo.repo_root() != expected_repo {
                         debug!(
                             "Ignoring commit request for {}, {} is no longer open",
                             id,
@@ -200,7 +200,7 @@ impl App {
                     .as_mut()
                     .ok_or_else(|| Error::msg("Commit requested without valid repo"))?;
 
-                if expected_repo != repo.git_dir() {
+                if expected_repo != repo.repo_root() {
                     debug!(
                         "Ignoring diff request for {} -> {}, {} is no longer open",
                         from,
@@ -220,7 +220,7 @@ impl App {
                 })?;
             }
             AppRequest::OpenRepo(path) => {
-                let mut repo = Repo::new(path.clone()).context("Failed to load git history")?;
+                let mut repo = Repo::new(path).context("Failed to load git history")?;
 
                 let repo_state = get_repo_state(&mut repo)?;
 
@@ -228,12 +228,13 @@ impl App {
                     .send(AppEvent::RepoStateUpdated(repo_state))
                     .context("Failed to send response branches")?;
 
-                self.repo = Some(repo);
                 // FIXME: There is a race here where if a new object is created between when we
                 // fetched the repo state and now we will not update the repo, however if we move
                 // this up and changing repos fails the old path will not be watched anymore, and
                 // we may miss an update in the old repo.
-                self.notifier.watch(path, RecursiveMode::Recursive)?;
+                self.notifier
+                    .watch(repo.git_dir(), RecursiveMode::Recursive)?;
+                self.repo = Some(repo);
             }
             AppRequest::GetCommitGraph {
                 expected_repo,
@@ -241,10 +242,10 @@ impl App {
                 ..
             } => match &mut self.repo {
                 Some(repo) => {
-                    if repo.git_dir() != expected_repo {
+                    if repo.repo_root() != expected_repo {
                         bail!(
                             "Current repo does not match expected repo: {}, {}",
-                            repo.git_dir().display(),
+                            repo.repo_root().display(),
                             expected_repo.display()
                         );
                     }
@@ -318,7 +319,7 @@ fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
     let head = repo.resolve_reference(&ReferenceId::head())?;
 
     Ok(RepoState {
-        repo: repo.git_dir().to_path_buf(),
+        repo: repo.repo_root().to_path_buf(),
         head,
         branches,
     })

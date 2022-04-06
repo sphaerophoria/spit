@@ -32,11 +32,12 @@ pub(crate) struct Repo {
 
 impl Repo {
     pub(crate) fn new(repo_root: PathBuf) -> Result<Repo> {
-        let git_dir = repo_root.join(".git");
-        let packs = find_packs(&git_dir)?;
         let decompressor = Decompress::new(true);
         let git2_repo =
             git2::Repository::open(repo_root.clone()).context("Failed to open git2 repo")?;
+
+        let git_dir = git2_repo.path().to_path_buf();
+        let packs = find_packs(&git_dir)?;
 
         Ok(Repo {
             git2_repo,
@@ -236,8 +237,12 @@ impl Repo {
             .into())
     }
 
-    pub(crate) fn git_dir(&self) -> &Path {
+    pub(crate) fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    pub(crate) fn git_dir(&self) -> &Path {
+        &self.git_dir
     }
 
     pub(crate) fn resolve_reference(&self, id: &ReferenceId) -> Result<ReferenceId> {
