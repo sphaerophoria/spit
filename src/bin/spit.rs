@@ -15,7 +15,10 @@ fn main() -> Result<()> {
     };
 
     let gui = Gui::new(app_request_tx.clone(), app_response_rx)?;
-    let native_options = eframe::NativeOptions::default();
+    let native_options = eframe::NativeOptions {
+        maximized: true,
+        ..Default::default()
+    };
 
     std::thread::spawn(move || {
         let mut app = App::new(app_response_tx, app_request_tx, app_request_rx)

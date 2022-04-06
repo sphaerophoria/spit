@@ -15,8 +15,8 @@ use anyhow::{Context, Error, Result};
 use clipboard::{ClipboardContext, ClipboardProvider};
 use eframe::{
     egui::{
-        self, text::LayoutJob, Color32, Pos2, Rect, Response, RichText, ScrollArea, Sense, Stroke,
-        TextEdit, TextFormat, TextStyle, Ui, Widget,
+        self, text::LayoutJob, Align, Color32, Layout, Pos2, Rect, Response, RichText, ScrollArea,
+        Sense, Stroke, TextEdit, TextFormat, TextStyle, Ui, Widget,
     },
     epi,
 };
@@ -58,7 +58,7 @@ impl GuiInner {
             tx,
             output: Vec::new(),
             git_command: String::new(),
-            show_console: false,
+            show_console: true,
             outgoing_requests: HashSet::new(),
             repo_state: Default::default(),
             view_state: Default::default(),
@@ -222,6 +222,7 @@ impl GuiInner {
 
         if self.show_console {
             let send_git_command = egui::TopBottomPanel::bottom("output")
+                .resizable(true)
                 .show(ctx, |ui| {
                     render_console(ui, &self.output, &mut self.git_command)
                 })
@@ -389,6 +390,7 @@ fn render_commit_view(
     }
 
     egui::ScrollArea::vertical()
+        .id_source("commit_view")
         .max_height(f32::INFINITY)
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -423,23 +425,42 @@ fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf>
 }
 
 fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String) -> bool {
-    egui::ScrollArea::vertical()
-        .stick_to_bottom()
-        .auto_shrink([false, true])
-        .max_height(250.0)
-        .show(ui, |ui| {
-            for s in output {
-                ui.monospace(s);
-            }
+    // UI management...
+    // As far as I can tell, ScrollArea is going to take up the remaining spcace if I do not set
+    // auto_shrink to true, however I want auto_shrink to be false or else I cannot resize the pane
+    // we are in
+    //
+    // As far as I can tell the scroll area needs to be laid out top to bottom or else the scroll
+    // area will be extremely long and mostly empty
+    //
+    // From the above two constraints...
+    // * Layout backwards so that we can put our text entry at the bottom and have the ui
+    // automatically track remaining space
+    // * Layout forwards from within the backwards layout to get the scroll area to work right
+    ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+        let response = egui::TextEdit::multiline(git_command)
+            .id_source("git_command")
+            .desired_rows(1)
+            .desired_width(ui.available_width())
+            .font(TextStyle::Monospace)
+            .show(ui)
+            .response;
+
+        ui.with_layout(Layout::default(), |ui| {
+            egui::ScrollArea::vertical()
+                .id_source("console")
+                .auto_shrink([false, false])
+                .stick_to_bottom()
+                .show(ui, |ui| {
+                    for s in output {
+                        ui.monospace(s);
+                    }
+                });
         });
 
-    let response = egui::TextEdit::multiline(git_command)
-        .desired_width(ui.available_width())
-        .desired_rows(1)
-        .font(TextStyle::Monospace)
-        .ui(ui);
-
-    response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
+        response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
+    })
+    .inner
 }
 
 enum SidebarAction {
