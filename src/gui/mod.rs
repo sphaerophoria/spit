@@ -11,7 +11,8 @@ use crate::{
     util::Cache,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
+use clipboard::{ClipboardContext, ClipboardProvider};
 use eframe::{
     egui::{
         self, text::LayoutJob, Color32, Pos2, Rect, Response, RichText, ScrollArea, Sense, Stroke,
@@ -46,13 +47,14 @@ struct GuiInner {
     selected_commit: Option<ObjectId>,
     last_requested_diff: Option<ObjectId>,
     current_diff: Option<Diff>,
+    clipboard: ClipboardContext,
 }
 
 impl GuiInner {
     const MAX_CACHED_COMMITS: usize = 1000;
 
-    fn new(tx: Sender<AppRequest>) -> GuiInner {
-        GuiInner {
+    fn new(tx: Sender<AppRequest>) -> Result<GuiInner> {
+        Ok(GuiInner {
             tx,
             output: Vec::new(),
             git_command: String::new(),
@@ -67,7 +69,9 @@ impl GuiInner {
             selected_commit: None,
             last_requested_diff: None,
             current_diff: None,
-        }
+            clipboard: ClipboardContext::new()
+                .map_err(|_| Error::msg("Failed to construct clipboard"))?,
+        })
     }
 
     fn reset(&mut self) {
@@ -248,6 +252,7 @@ impl GuiInner {
                     &self.repo_state,
                     &self.view_state,
                     &mut self.pending_view_state,
+                    &mut self.clipboard,
                 )
             })
             .inner;
@@ -283,12 +288,12 @@ pub struct Gui {
 }
 
 impl Gui {
-    pub fn new(tx: Sender<AppRequest>, rx: Receiver<AppEvent>) -> Gui {
-        let inner = GuiInner::new(tx);
-        Gui {
+    pub fn new(tx: Sender<AppRequest>, rx: Receiver<AppEvent>) -> Result<Gui> {
+        let inner = GuiInner::new(tx)?;
+        Ok(Gui {
             rx: Some(rx),
             inner: Arc::new(Mutex::new(inner)),
-        }
+        })
     }
 }
 
@@ -431,6 +436,7 @@ fn render_side_panel(
     repo_state: &RepoState,
     view_state: &ViewState,
     pending_view_state: &mut ViewState,
+    clipboard: &mut ClipboardContext,
 ) -> Option<ReferenceId> {
     let mut new_selected = Vec::with_capacity(pending_view_state.selected_references.len());
     let mut to_checkout = None;
@@ -449,6 +455,12 @@ fn render_side_panel(
                     if ui.button("Checkout").clicked() {
                         to_checkout = Some(branch.id.clone());
                         ui.close_menu();
+                    }
+
+                    if ui.button("Copy").clicked() {
+                        if let Err(e) = clipboard.set_contents(branch.id.to_string()) {
+                            error!("Failed to copy branch: {}", e);
+                        }
                     }
                 });
                 if selected {

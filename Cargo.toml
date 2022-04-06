@@ -18,6 +18,7 @@ git2 = "0.14.2"
 rfd = "0.8.1"
 notify = "4.0.17"
 shell-escape = "0.1.5"
+clipboard = "0.5.0"
 
 [dev-dependencies]
 tempfile = "3.3.0"
