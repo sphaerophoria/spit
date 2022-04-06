@@ -109,64 +109,63 @@ impl App {
         }
     }
 
+    fn execute_command(&mut self, requested_state: &RepoState, cmd: &str) -> Result<()> {
+        if self.get_repo_state()? != *requested_state {
+            bail!("Repo state has changed since {} requested", cmd);
+        }
+
+        let repo = match &self.repo {
+            Some(repo) => repo,
+            None => bail!("Invalid repo"),
+        };
+
+        let repo_root = repo.repo_root();
+
+        self.tx
+            .send(AppEvent::OutputLogged(cmd.to_string()))
+            .context("Failed to send response to gui")?;
+
+        // NOTE: This looks really wrong, and that's because it is to some extent. We should not be
+        // running bash commands for every git command we want to run. But this has the large benefit
+        // that every action the program executes can be copy pasted by a user and run again. This
+        // makes interop with command line users very nice and is worth the architectural incorrectness
+        // of shelling out
+        let mut bash_cmd = OsString::new();
+        bash_cmd.push(cmd);
+        bash_cmd.push(" 2>&1");
+
+        let output = Command::new("/bin/bash")
+            .arg("-c")
+            .arg(bash_cmd)
+            .current_dir(repo_root)
+            .output()
+            .with_context(|| format!("Failed to run {}", cmd))?;
+
+        let parsed =
+            String::from_utf8(output.stdout).context("Git response was not a valid utf8 string")?;
+
+        self.tx
+            .send(AppEvent::OutputLogged(parsed))
+            .context("Failed to send response to gui")?;
+
+        Ok(())
+    }
+
     fn handle_req(&mut self, req: AppRequest) -> Result<()> {
         match req {
             AppRequest::Checkout(repo_state, reference_id) => {
-                if self.get_repo_state()? != repo_state {
-                    bail!(
-                        "Repo state has changed since checkout {} request",
-                        reference_id
-                    );
-                }
-
-                let repo = match &self.repo {
-                    Some(repo) => repo,
-                    None => bail!("Invalid repo"),
-                };
-
                 let ref_unescaped = reference_id.to_string();
                 let ref_escaped = shell_escape::escape((&ref_unescaped).into());
-                let git_dir = repo.repo_root();
-
                 let command = format!("git checkout {}", ref_escaped);
-
-                self.tx
-                    .send(AppEvent::OutputLogged(command.clone()))
-                    .context("Failed to send response to gui")?;
-
-                let parsed = execute_command_in_repo(git_dir, &command)?;
-
-                self.tx
-                    .send(AppEvent::OutputLogged(parsed))
-                    .context("Failed to send response to gui")?;
+                self.execute_command(&repo_state, &command)?;
             }
             AppRequest::ExecuteGitCommand(repo_state, cmd) => {
                 if !cmd.starts_with("git ") {
                     bail!("Invalid git command: {}", cmd);
                 }
 
-                if self.get_repo_state()? != repo_state {
-                    bail!("Repo state has changed since {} was executed", cmd);
-                }
-
-                let repo = match &self.repo {
-                    Some(repo) => repo,
-                    None => bail!("Invalid repo"),
-                };
-
-                let git_dir = repo.repo_root();
-
                 let cmd = cmd.trim();
-
-                self.tx
-                    .send(AppEvent::OutputLogged(cmd.to_string()))
-                    .context("Failed to send response to gui")?;
-
-                let parsed = execute_command_in_repo(git_dir, cmd)?;
-
-                self.tx
-                    .send(AppEvent::OutputLogged(parsed))
-                    .context("Failed to send response to gui")?;
+                self.execute_command(&repo_state, cmd)?;
             }
             AppRequest::GetCommit { expected_repo, id } => match &mut self.repo {
                 Some(repo) => {
@@ -282,31 +281,6 @@ impl App {
         let repo = self.repo.as_mut().ok_or_else(|| Error::msg("No repo"))?;
         get_repo_state(repo)
     }
-}
-
-fn execute_command_in_repo(repo: &Path, shell_string: &str) -> Result<String> {
-    // NOTE: This looks really wrong, and that's because it is to some extent. We should not be
-    // running bash commands for every git command we want to run. But this has the large benefit
-    // that every action the program executes can be copy pasted by a user and run again. This
-    // makes interop with command line users very nice and is worth the architectural incorrectness
-    // of shelling out
-    let mut bash_cmd = OsString::new();
-    bash_cmd.push("cd '");
-    bash_cmd.push(repo.as_os_str());
-    bash_cmd.push("'; ");
-    bash_cmd.push(shell_string);
-    bash_cmd.push(" 2>&1");
-
-    let output = Command::new("/bin/bash")
-        .arg("-c")
-        .arg(bash_cmd)
-        .output()
-        .with_context(|| format!("Failed to run {}", shell_string))?;
-
-    let parsed =
-        String::from_utf8(output.stdout).context("Git response was not a valid utf8 string")?;
-
-    Ok(parsed.trim().to_string())
 }
 
 fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
