@@ -24,7 +24,7 @@ pub(crate) struct CommitMetadata {
     pub(crate) timestamp: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReferenceId {
     Symbolic(String),
     LocalBranch(String),

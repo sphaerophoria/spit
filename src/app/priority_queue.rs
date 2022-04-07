@@ -92,28 +92,30 @@ mod test {
             expected_repo: "1".into(),
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
-                selected_references: vec![ReferenceId::head()],
+                selected_references: FromIterator::from_iter([ReferenceId::head()]),
             },
         })?;
         tx.send(AppRequest::GetCommitGraph {
             expected_repo: "1".into(),
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
-                selected_references: vec![],
+                selected_references: Default::default(),
             },
         })?;
         tx.send(AppRequest::GetCommitGraph {
             expected_repo: "1".into(),
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
-                selected_references: vec![ReferenceId::LocalBranch("master".into())],
+                selected_references: FromIterator::from_iter([ReferenceId::LocalBranch(
+                    "master".into(),
+                )]),
             },
         })?;
 
         if let AppRequest::GetCommitGraph { view_state, .. } = q.recv()? {
             assert_eq!(
                 view_state.selected_references,
-                &[ReferenceId::LocalBranch("master".into())]
+                FromIterator::from_iter([ReferenceId::LocalBranch("master".into())])
             )
         } else {
             assert!(false);

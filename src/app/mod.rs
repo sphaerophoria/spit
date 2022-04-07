@@ -13,6 +13,7 @@ use log::{debug, error, info};
 use notify::{self, RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 
 use std::{
+    collections::HashSet,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Command,
@@ -30,7 +31,7 @@ pub struct RepoState {
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ViewState {
-    pub(crate) selected_references: Vec<ReferenceId>,
+    pub(crate) selected_references: HashSet<ReferenceId>,
 }
 
 impl ViewState {
@@ -43,7 +44,7 @@ impl ViewState {
             .collect();
 
         if self.selected_references.is_empty() && had_any_branches {
-            self.selected_references = vec![ReferenceId::head()]
+            self.selected_references = FromIterator::from_iter([ReferenceId::head()]);
         }
     }
 }
@@ -372,11 +373,11 @@ mod test {
     #[test]
     fn view_state_deleted_branch() -> Result<()> {
         let mut view_state = ViewState {
-            selected_references: vec![
+            selected_references: FromIterator::from_iter([
                 ReferenceId::head(),
                 ReferenceId::RemoteBranch("Test".to_string()),
                 ReferenceId::LocalBranch("Test".to_string()),
-            ],
+            ]),
         };
 
         view_state.update_with_repo_state(&RepoState {
@@ -397,10 +398,10 @@ mod test {
         assert_eq!(view_state.selected_references.len(), 2);
         assert_eq!(
             view_state.selected_references,
-            &[
+            FromIterator::from_iter([
                 ReferenceId::head(),
                 ReferenceId::RemoteBranch("Test".to_string())
-            ]
+            ])
         );
         Ok(())
     }
@@ -408,7 +409,7 @@ mod test {
     #[test]
     fn view_state_preserve_no_selection() -> Result<()> {
         let mut view_state = ViewState {
-            selected_references: vec![],
+            selected_references: Default::default(),
         };
 
         view_state.update_with_repo_state(&RepoState {
@@ -421,7 +422,7 @@ mod test {
         });
 
         assert_eq!(view_state.selected_references.len(), 0);
-        assert_eq!(view_state.selected_references, &[]);
+        assert_eq!(view_state.selected_references, Default::default());
 
         Ok(())
     }
@@ -429,7 +430,9 @@ mod test {
     #[test]
     fn view_state_swap_to_head() -> Result<()> {
         let mut view_state = ViewState {
-            selected_references: vec![ReferenceId::LocalBranch("master".into())],
+            selected_references: FromIterator::from_iter([ReferenceId::LocalBranch(
+                "master".into(),
+            )]),
         };
 
         view_state.update_with_repo_state(&RepoState {
@@ -443,7 +446,10 @@ mod test {
 
         // Only selected branch remove, swap to HEAD
         assert_eq!(view_state.selected_references.len(), 1);
-        assert_eq!(view_state.selected_references, &[ReferenceId::head()]);
+        assert_eq!(
+            view_state.selected_references,
+            FromIterator::from_iter([ReferenceId::head()])
+        );
 
         Ok(())
     }

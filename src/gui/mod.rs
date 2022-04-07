@@ -1,6 +1,7 @@
+mod sidebar;
 mod tristate_checkbox;
 
-use tristate_checkbox::TristateCheckbox;
+use sidebar::{Sidebar, SidebarAction};
 
 use crate::{
     app::{AppEvent, AppRequest, CheckoutItem, RepoState, ViewState},
@@ -15,8 +16,8 @@ use anyhow::{Context, Error, Result};
 use clipboard::{ClipboardContext, ClipboardProvider};
 use eframe::{
     egui::{
-        self, text::LayoutJob, Align, Color32, Layout, Pos2, Rect, Response, RichText, ScrollArea,
-        Sense, Stroke, TextEdit, TextFormat, TextStyle, Ui, Widget,
+        self, text::LayoutJob, Align, Color32, Layout, Pos2, Rect, Response, RichText, Sense,
+        Stroke, TextEdit, TextFormat, TextStyle, Ui, Widget,
     },
     epi,
 };
@@ -38,7 +39,7 @@ struct GuiInner {
     git_command: String,
     show_console: bool,
     outgoing_requests: HashSet<ObjectId>,
-    repo_state: RepoState,
+    repo_state: Arc<RepoState>,
     view_state: ViewState,
     pending_view_state: ViewState,
     last_requsted_view_state: ViewState,
@@ -47,6 +48,7 @@ struct GuiInner {
     selected_commit: Option<ObjectId>,
     last_requested_diff: Option<ObjectId>,
     current_diff: Option<Diff>,
+    sidebar: Sidebar,
     clipboard: ClipboardContext,
 }
 
@@ -69,6 +71,7 @@ impl GuiInner {
             selected_commit: None,
             last_requested_diff: None,
             current_diff: None,
+            sidebar: Sidebar::new(),
             clipboard: ClipboardContext::new()
                 .map_err(|_| Error::msg("Failed to construct clipboard"))?,
         })
@@ -119,12 +122,15 @@ impl GuiInner {
             AppEvent::RepoStateUpdated(repo_state) => {
                 if self.repo_state.repo != repo_state.repo {
                     self.reset();
-                    self.pending_view_state.selected_references = vec![ReferenceId::head()];
+                    self.pending_view_state.selected_references =
+                        FromIterator::from_iter([ReferenceId::head()]);
                 }
 
+                let repo_state = Arc::new(repo_state);
                 self.pending_view_state.update_with_repo_state(&repo_state);
                 self.view_state.update_with_repo_state(&repo_state);
-                if self.repo_state != repo_state {
+                self.sidebar.update_with_repo_state(Arc::clone(&repo_state));
+                if *self.repo_state != *repo_state {
                     self.repo_state = repo_state;
                     // Reset requested view state to force a re-request
                     self.last_requsted_view_state = Default::default();
@@ -146,7 +152,10 @@ impl GuiInner {
     fn send_current_git_command(&mut self) {
         let cmd = std::mem::take(&mut self.git_command);
         self.tx
-            .send(AppRequest::ExecuteGitCommand(self.repo_state.clone(), cmd))
+            .send(AppRequest::ExecuteGitCommand(
+                (*self.repo_state).clone(),
+                cmd,
+            ))
             .expect("Failed to request git command");
     }
 
@@ -180,7 +189,7 @@ impl GuiInner {
 
     fn request_checkout(&mut self, item: CheckoutItem) -> Result<()> {
         self.tx
-            .send(AppRequest::Checkout(self.repo_state.clone(), item))
+            .send(AppRequest::Checkout((*self.repo_state).clone(), item))
             .context("Failed to send checkout request")?;
 
         Ok(())
@@ -197,6 +206,14 @@ impl GuiInner {
                 }
                 commit_log::CommitLogAction::CheckoutObject(id) => {
                     self.request_checkout(CheckoutItem::Object(id))?;
+                }
+                commit_log::CommitLogAction::CheckoutReference(id) => {
+                    self.request_checkout(CheckoutItem::Reference(id))?;
+                }
+                commit_log::CommitLogAction::DeleteReference(id) => {
+                    self.tx
+                        .send(AppRequest::Delete((*self.repo_state).clone(), id))
+                        .context("Failed to send delete request")?;
                 }
             }
         }
@@ -274,9 +291,8 @@ impl GuiInner {
         let sidebar_action = egui::SidePanel::right("sidebar")
             .resizable(true)
             .show(ctx, |ui| {
-                render_side_panel(
+                self.sidebar.show(
                     ui,
-                    &self.repo_state,
                     &self.view_state,
                     &mut self.pending_view_state,
                     &mut self.clipboard,
@@ -303,7 +319,7 @@ impl GuiInner {
             }
             SidebarAction::Delete(id) => {
                 self.tx
-                    .send(AppRequest::Delete(self.repo_state.clone(), id))
+                    .send(AppRequest::Delete((*self.repo_state).clone(), id))
                     .context("Failed to send delete request")?;
             }
             SidebarAction::None => (),
@@ -488,60 +504,6 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
     .inner
 }
 
-enum SidebarAction {
-    Checkout(ReferenceId),
-    Delete(ReferenceId),
-    None,
-}
-
-fn render_side_panel(
-    ui: &mut Ui,
-    repo_state: &RepoState,
-    view_state: &ViewState,
-    pending_view_state: &mut ViewState,
-    clipboard: &mut ClipboardContext,
-) -> SidebarAction {
-    let mut new_selected = Vec::with_capacity(pending_view_state.selected_references.len());
-    let mut action = SidebarAction::None;
-
-    ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for branch in repo_state.branches.iter() {
-                let real_state = view_state.selected_references.contains(&branch.id);
-                let mut selected = pending_view_state.selected_references.contains(&branch.id);
-
-                let text = reference_richtext(&branch.id, repo_state);
-
-                let response = TristateCheckbox::new(&real_state, &mut selected, text).ui(ui);
-                response.context_menu(|ui| {
-                    if ui.button("Copy").clicked() {
-                        try_set_clipboard(clipboard, branch.id.to_string());
-                        ui.close_menu();
-                    }
-
-                    if ui.button("Checkout").clicked() {
-                        action = SidebarAction::Checkout(branch.id.clone());
-                        ui.close_menu();
-                    }
-
-                    ui.separator();
-
-                    if ui.button("Delete").clicked() {
-                        action = SidebarAction::Delete(branch.id.clone());
-                        ui.close_menu();
-                    }
-                });
-                if selected {
-                    new_selected.push(branch.id.clone());
-                }
-            }
-        });
-
-    pending_view_state.selected_references = new_selected;
-    action
-}
-
 fn reference_richtext(id: &ReferenceId, repo_state: &RepoState) -> RichText {
     let color = reference_color(id);
 
@@ -703,6 +665,8 @@ mod commit_log {
     pub(super) enum CommitLogAction {
         FetchCommit(ObjectId),
         CheckoutObject(ObjectId),
+        CheckoutReference(ReferenceId),
+        DeleteReference(ReferenceId),
     }
 
     pub(super) fn render(
@@ -764,9 +728,12 @@ mod commit_log {
                     let mut job = LayoutJob::default();
                     let style = text_ui.style();
                     let font = style.text_styles[&TextStyle::Body].clone();
+                    let mut node_branches = Vec::new();
 
                     if let Some(ids) = branch_id_lookup.get(&node.id) {
                         for id in ids {
+                            node_branches.push(id);
+
                             let name = id.to_string();
                             let color = reference_color(id);
                             let underline = reference_underline(id, repo_state);
@@ -816,10 +783,34 @@ mod commit_log {
                             ui.close_menu();
                         }
 
-                        if ui.button("Checkout").clicked() {
-                            warn!("Unimplemented checkout");
+                        for ref_id in &node_branches {
+                            if ui.button(&format!("Copy {}", ref_id)).clicked() {
+                                try_set_clipboard(clipboard, ref_id.to_string());
+                                ui.close_menu();
+                            }
+                        }
+
+                        ui.separator();
+
+                        if ui.button("Checkout hash").clicked() {
                             actions.push(CommitLogAction::CheckoutObject(node.id.clone()));
                             ui.close_menu();
+                        }
+
+                        for &ref_id in &node_branches {
+                            if ui.button(&format!("Checkout {}", ref_id)).clicked() {
+                                actions.push(CommitLogAction::CheckoutReference(ref_id.clone()));
+                                ui.close_menu();
+                            }
+                        }
+
+                        ui.separator();
+
+                        for &ref_id in &node_branches {
+                            if ui.button(&format!("Delete {}", ref_id)).clicked() {
+                                actions.push(CommitLogAction::DeleteReference(ref_id.clone()));
+                                ui.close_menu();
+                            }
                         }
                     });
                 }
