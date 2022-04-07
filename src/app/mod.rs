@@ -71,6 +71,7 @@ pub enum AppRequest {
         expected_repo: PathBuf,
         from: ObjectId,
         to: ObjectId,
+        ignore_whitespace: bool,
     },
     Checkout(RepoState, CheckoutItem),
     Delete(RepoState, ReferenceId),
@@ -201,6 +202,7 @@ impl App {
                 expected_repo,
                 from,
                 to,
+                ignore_whitespace,
             } => {
                 let repo = self
                     .repo
@@ -218,7 +220,7 @@ impl App {
                 }
 
                 let diff = repo
-                    .diff(&from, &to)
+                    .diff(&from, &to, ignore_whitespace)
                     .with_context(|| format!("Failed to retrieve diff for {} -> {}", from, to))?;
 
                 self.tx.send(AppEvent::DiffFetched {

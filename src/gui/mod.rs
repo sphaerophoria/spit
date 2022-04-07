@@ -1,13 +1,15 @@
+mod commit_view;
 mod sidebar;
 mod tristate_checkbox;
 
+use commit_view::{CommitView, CommitViewAction};
 use sidebar::{Sidebar, SidebarAction};
 
 use crate::{
     app::{AppEvent, AppRequest, CheckoutItem, RepoState, ViewState},
     git::{
         graph::{Edge, GraphPoint},
-        Commit, Diff, DiffContent, HistoryGraph, ObjectId, ReferenceId,
+        Commit, HistoryGraph, ObjectId, ReferenceId,
     },
     util::Cache,
 };
@@ -17,7 +19,7 @@ use clipboard::{ClipboardContext, ClipboardProvider};
 use eframe::{
     egui::{
         self, text::LayoutJob, Align, Color32, Layout, Pos2, Rect, Response, RichText, Sense,
-        Stroke, TextEdit, TextFormat, TextStyle, Ui, Widget,
+        Stroke, TextFormat, TextStyle, Ui,
     },
     epi,
 };
@@ -46,8 +48,7 @@ struct GuiInner {
     commit_graph: Option<HistoryGraph>,
     commit_cache: Cache<ObjectId, Commit>,
     selected_commit: Option<ObjectId>,
-    last_requested_diff: Option<ObjectId>,
-    current_diff: Option<Diff>,
+    commit_view: CommitView,
     sidebar: Sidebar,
     clipboard: ClipboardContext,
 }
@@ -69,8 +70,7 @@ impl GuiInner {
             commit_graph: Default::default(),
             commit_cache: Cache::new(Self::MAX_CACHED_COMMITS),
             selected_commit: None,
-            last_requested_diff: None,
-            current_diff: None,
+            commit_view: CommitView::new(),
             sidebar: Sidebar::new(),
             clipboard: ClipboardContext::new()
                 .map_err(|_| Error::msg("Failed to construct clipboard"))?,
@@ -86,9 +86,8 @@ impl GuiInner {
         self.last_requsted_view_state = Default::default();
         self.commit_graph = Default::default();
         self.commit_cache = Cache::new(Self::MAX_CACHED_COMMITS);
+        self.commit_view.reset();
         self.selected_commit = None;
-        self.last_requested_diff = None;
-        self.current_diff = None;
     }
 
     fn handle_event(&mut self, response: AppEvent) {
@@ -108,7 +107,7 @@ impl GuiInner {
             }
             AppEvent::DiffFetched { repo, diff } => {
                 if self.repo_state.repo == repo {
-                    self.current_diff = Some(diff);
+                    self.commit_view.update_diff(diff);
                 }
             }
             AppEvent::CommitGraphFetched(view_state, mut graph) => {
@@ -220,35 +219,18 @@ impl GuiInner {
         Ok(())
     }
 
-    fn request_missing_diff(&mut self) -> Result<()> {
-        let selected_commit = match &self.selected_commit {
-            Some(v) => v,
-            None => return Ok(()),
-        };
-
-        if Some(selected_commit) == self.last_requested_diff.as_ref() {
-            return Ok(());
+    fn handle_commit_view_action(&mut self, action: CommitViewAction) -> Result<()> {
+        match action {
+            CommitViewAction::RequestDiff(diff_request) => {
+                self.tx.send(AppRequest::GetDiff {
+                    expected_repo: self.repo_state.repo.clone(),
+                    from: diff_request.from,
+                    to: diff_request.to,
+                    ignore_whitespace: diff_request.ignore_whitespace,
+                })?;
+            }
+            CommitViewAction::None => (),
         }
-
-        let commit = match self.commit_cache.get(selected_commit) {
-            Some(v) => v,
-            None => return Ok(()),
-        };
-
-        let parent = match commit.metadata.parents.get(0) {
-            // FIXME: Choose which parent to diff to
-            // FIXME: Support initial commit
-            Some(v) => v,
-            None => return Ok(()),
-        };
-
-        self.tx.send(AppRequest::GetDiff {
-            expected_repo: self.repo_state.repo.clone(),
-            from: parent.clone(),
-            to: commit.metadata.id.clone(),
-        })?;
-
-        self.last_requested_diff = self.selected_commit.clone();
 
         Ok(())
     }
@@ -275,18 +257,15 @@ impl GuiInner {
             }
         }
 
-        egui::TopBottomPanel::bottom("commit_view_panel")
+        let commit_view_action = egui::TopBottomPanel::bottom("commit_view_panel")
             .default_height(ctx.available_rect().height() / 2.0)
             .resizable(true)
             .min_height(100.0)
             .show(ctx, |ui| {
-                render_commit_view(
-                    ui,
-                    &self.commit_cache,
-                    self.selected_commit.as_ref(),
-                    self.current_diff.as_ref(),
-                );
-            });
+                self.commit_view
+                    .show(ui, &self.commit_cache, self.selected_commit.as_ref())
+            })
+            .inner;
 
         let sidebar_action = egui::SidePanel::right("sidebar")
             .resizable(true)
@@ -325,7 +304,7 @@ impl GuiInner {
             SidebarAction::None => (),
         }
 
-        self.request_missing_diff()?;
+        self.handle_commit_view_action(commit_view_action)?;
         self.handle_commit_log_actions(commit_log_actions)?;
         self.request_pending_view_state()?;
 
@@ -383,63 +362,6 @@ impl epi::App for Gui {
             error!("{:?}", e);
         }
     }
-}
-
-fn render_commit_view(
-    ui: &mut Ui,
-    cached_commits: &Cache<ObjectId, Commit>,
-    selected_commit: Option<&ObjectId>,
-    current_diff: Option<&Diff>,
-) {
-    let mut message = selected_commit
-        .and_then(|id| cached_commits.get(id))
-        .map(|commit| {
-            format!(
-                "id: {}\n\
-                    author: {}\n\
-                    timestamp: {}\n\
-                    \n\
-                    {}",
-                commit.metadata.id, commit.author, commit.metadata.timestamp, commit.message
-            )
-        })
-        .unwrap_or_else(String::new);
-
-    if let Some(diff) = current_diff {
-        if Some(&diff.to) == selected_commit {
-            for (file, content) in &diff.items {
-                message.push('\n');
-                message.push_str(&file.to_string());
-                message.push('\n');
-                match content {
-                    DiffContent::Patch(hunks) => {
-                        for (hunk, content) in hunks {
-                            message.push_str(hunk);
-                            message.push('\n');
-                            message.push_str(
-                                std::str::from_utf8(content)
-                                    .unwrap_or("Patch content is not valid utf8"),
-                            );
-                        }
-                    }
-                    DiffContent::Binary => {
-                        message.push_str("Binary content changed\n");
-                    }
-                }
-            }
-        }
-    }
-
-    egui::ScrollArea::vertical()
-        .id_source("commit_view")
-        .max_height(f32::INFINITY)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            TextEdit::multiline(&mut message.as_str())
-                .font(TextStyle::Monospace)
-                .desired_width(ui.available_width())
-                .ui(ui);
-        });
 }
 
 fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf> {

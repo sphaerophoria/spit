@@ -253,16 +253,23 @@ impl Repo {
             .try_into()
     }
 
-    pub(crate) fn diff(&self, id1: &ObjectId, id2: &ObjectId) -> Result<Diff> {
+    pub(crate) fn diff(
+        &self,
+        id1: &ObjectId,
+        id2: &ObjectId,
+        ignore_whitespace: bool,
+    ) -> Result<Diff> {
         let oid1 = id1.into();
         let oid2 = id2.into();
 
         let t1 = self.git2_repo.find_commit(oid1)?.tree()?;
         let t2 = self.git2_repo.find_commit(oid2)?.tree()?;
 
+        let mut options = git2::DiffOptions::new();
+        options.ignore_whitespace(ignore_whitespace);
         let diff = self
             .git2_repo
-            .diff_tree_to_tree(Some(&t1), Some(&t2), None)?;
+            .diff_tree_to_tree(Some(&t1), Some(&t2), Some(&mut options))?;
 
         let mut current_hunk_header = String::new();
         let mut output = Diff {
@@ -297,7 +304,7 @@ impl Repo {
                 let file_entry = output
                     .items
                     .entry(file_header)
-                    .or_insert_with(|| DiffContent::Patch(HashMap::new()));
+                    .or_insert_with(|| DiffContent::Patch(Default::default()));
                 let file_entry = match file_entry {
                     DiffContent::Binary => {
                         error!("Found line diff for binary file");

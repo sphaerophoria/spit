@@ -11,11 +11,7 @@ pub(crate) use repo::Repo;
 
 use anyhow::{Error, Result};
 use chrono::{DateTime, Utc};
-use std::{
-    collections::{BTreeMap, HashMap},
-    fmt,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CommitMetadata {
@@ -176,7 +172,7 @@ impl fmt::Display for DiffFileHeader {
 type DiffHunkHeader = String;
 
 pub(crate) enum DiffContent {
-    Patch(HashMap<DiffHunkHeader, Vec<u8>>),
+    Patch(BTreeMap<DiffHunkHeader, Vec<u8>>),
     Binary,
 }
 
