@@ -169,10 +169,6 @@ impl App {
                 self.execute_command(&repo_state, &git::commandline::delete(&reference_id)?)?;
             }
             AppRequest::ExecuteGitCommand(repo_state, cmd) => {
-                if !cmd.starts_with("git ") {
-                    bail!("Invalid git command: {}", cmd);
-                }
-
                 let cmd = cmd.trim();
                 self.execute_command(&repo_state, cmd)?;
             }
