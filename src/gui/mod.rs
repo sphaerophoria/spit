@@ -246,6 +246,8 @@ impl GuiInner {
         if self.show_console {
             let send_git_command = egui::TopBottomPanel::bottom("output")
                 .resizable(true)
+                .default_height(250.0)
+                .min_height(100.0)
                 .show(ctx, |ui| {
                     render_console(ui, &self.output, &mut self.git_command)
                 })
@@ -259,6 +261,7 @@ impl GuiInner {
         egui::TopBottomPanel::bottom("commit_view_panel")
             .default_height(ctx.available_rect().height() / 2.0)
             .resizable(true)
+            .min_height(100.0)
             .show(ctx, |ui| {
                 render_commit_view(
                     ui,
