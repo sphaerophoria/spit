@@ -1,6 +1,6 @@
 use crate::{
     app::{RepoState, ViewState},
-    git::ReferenceId,
+    git::{Branch, ReferenceId},
     gui::{reference_richtext, tristate_checkbox::TristateCheckbox, try_set_clipboard},
 };
 
@@ -33,18 +33,8 @@ impl Sidebar {
     }
 
     pub(super) fn update_filters(&mut self) {
-        self.filtered_refs = self
-            .repo_state
-            .branches
-            .iter()
-            .filter_map(|x| {
-                if x.id.to_string().contains(&self.filter_text) {
-                    Some(x.id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        self.filtered_refs =
+            filter_branches(&self.filter_text, &self.repo_state.branches).collect();
     }
 
     pub(super) fn show(
@@ -124,5 +114,58 @@ impl Sidebar {
             });
 
         action
+    }
+}
+
+fn filter_branches<'a>(
+    filter: &'a str,
+    branches: &'a [Branch],
+) -> impl Iterator<Item = ReferenceId> + 'a {
+    branches.iter().filter_map(move |x| {
+        if x.id.to_string().contains(&filter) {
+            Some(x.id.clone())
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_branch_filtering() {
+        let branches = [
+            Branch {
+                id: ReferenceId::Symbolic("HEAD".into()),
+                head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap(),
+            },
+            Branch {
+                id: ReferenceId::LocalBranch("local_branch".into()),
+                head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap(),
+            },
+            Branch {
+                id: ReferenceId::RemoteBranch("origin/remote_branch".into()),
+                head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap(),
+            },
+        ];
+
+        assert_eq!(filter_branches("test", &branches).next(), None);
+        assert_eq!(
+            filter_branches("HE", &branches).collect::<Vec<_>>(),
+            vec![ReferenceId::Symbolic("HEAD".into())]
+        );
+        assert_eq!(
+            filter_branches("_", &branches).collect::<Vec<_>>(),
+            vec![
+                ReferenceId::LocalBranch("local_branch".into()),
+                ReferenceId::RemoteBranch("origin/remote_branch".into())
+            ]
+        );
+        assert_eq!(
+            filter_branches("llocal_branch", &branches).collect::<Vec<_>>(),
+            vec![]
+        );
     }
 }
