@@ -8,7 +8,7 @@ use eframe::egui::{
     TextStyle, Ui, Widget,
 };
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[derive(PartialEq, Eq, Clone)]
 pub(super) struct DiffRequest {
@@ -86,7 +86,7 @@ impl CommitView {
 
                 if let Some(diff) = &self.current_diff {
                     if &diff.to == selected_commit {
-                        add_diff_hunks_to_ui(ui, &diff.items, force_expanded_state);
+                        add_diff_hunks_to_ui(ui, diff, force_expanded_state);
                     }
                 }
             });
@@ -180,13 +180,21 @@ fn diff_view_layouter(ui: &Ui, s: &str, wrap_width: f32) -> Arc<Galley> {
     ui.fonts().layout_job(job)
 }
 
-fn add_diff_hunks_to_ui(
-    ui: &mut Ui,
-    diff_items: &BTreeMap<DiffFileHeader, DiffContent>,
-    force_state: Option<bool>,
-) {
-    for (file, content) in diff_items {
+fn add_diff_hunks_to_ui(ui: &mut Ui, diff: &Diff, force_state: Option<bool>) {
+    for (file, content) in &diff.items {
+        #[derive(Hash)]
+        struct CommitViewId<'a> {
+            from: &'a ObjectId,
+            to: &'a ObjectId,
+            file: &'a DiffFileHeader,
+        }
+
         CollapsingHeader::new(file.to_string())
+            .id_source(CommitViewId {
+                from: &diff.from,
+                to: &diff.to,
+                file,
+            })
             .open(force_state)
             .show(ui, |ui| match content {
                 DiffContent::Patch(hunks) => {
