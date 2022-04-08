@@ -78,6 +78,11 @@ impl Sidebar {
                     .selected_references
                     .retain(|id| !self.filtered_refs.contains(id));
             }
+
+            if ui.button("Clear filter").clicked() {
+                self.filter_text = String::new();
+                self.update_filters()
+            }
         });
 
         ScrollArea::vertical()
