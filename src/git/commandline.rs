@@ -1,4 +1,7 @@
-use crate::{app::CheckoutItem, git::ReferenceId};
+use crate::{
+    app::CheckoutItem,
+    git::{ObjectId, ReferenceId},
+};
 use anyhow::{bail, Error, Result};
 
 fn escaped_string(s: &str) -> String {
@@ -35,4 +38,8 @@ pub(crate) fn delete(ref_id: &ReferenceId) -> Result<String> {
         ReferenceId::Unknown => bail!("Cannot remove unknown ref"),
     };
     Ok(ret)
+}
+
+pub(crate) fn cherry_pick(id: &ObjectId) -> String {
+    format!("git cherry-pick {}", escaped_string(&id.to_string()))
 }

@@ -75,6 +75,7 @@ pub enum AppRequest {
     },
     Checkout(RepoState, CheckoutItem),
     Delete(RepoState, ReferenceId),
+    CherryPick(RepoState, ObjectId),
     ExecuteGitCommand(RepoState, String),
 }
 
@@ -167,6 +168,9 @@ impl App {
             }
             AppRequest::Delete(repo_state, reference_id) => {
                 self.execute_command(&repo_state, &git::commandline::delete(&reference_id)?)?;
+            }
+            AppRequest::CherryPick(repo_state, id) => {
+                self.execute_command(&repo_state, &git::commandline::cherry_pick(&id))?;
             }
             AppRequest::ExecuteGitCommand(repo_state, cmd) => {
                 let cmd = cmd.trim();

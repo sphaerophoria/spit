@@ -214,6 +214,11 @@ impl GuiInner {
                         .send(AppRequest::Delete((*self.repo_state).clone(), id))
                         .context("Failed to send delete request")?;
                 }
+                commit_log::CommitLogAction::CherryPick(id) => {
+                    self.tx
+                        .send(AppRequest::CherryPick((*self.repo_state).clone(), id))
+                        .context("Failed to send delete request")?;
+                }
             }
         }
         Ok(())
@@ -589,6 +594,7 @@ mod commit_log {
         CheckoutObject(ObjectId),
         CheckoutReference(ReferenceId),
         DeleteReference(ReferenceId),
+        CherryPick(ObjectId),
     }
 
     pub(super) fn render(
@@ -724,6 +730,13 @@ mod commit_log {
                                 actions.push(CommitLogAction::CheckoutReference(ref_id.clone()));
                                 ui.close_menu();
                             }
+                        }
+
+                        ui.separator();
+
+                        if ui.button("Cherry pick").clicked() {
+                            actions.push(CommitLogAction::CherryPick(node.id.clone()));
+                            ui.close_menu();
                         }
 
                         ui.separator();
