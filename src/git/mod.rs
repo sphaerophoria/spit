@@ -137,8 +137,8 @@ impl CommitMetadataWithoutId {
 
 #[derive(Eq, PartialEq, Hash, Clone, Ord, PartialOrd)]
 pub(crate) struct DiffFileHeader {
-    old_file: Option<PathBuf>,
-    new_file: Option<PathBuf>,
+    pub(crate) old_file: Option<PathBuf>,
+    pub(crate) new_file: Option<PathBuf>,
 }
 
 impl fmt::Display for DiffFileHeader {
@@ -176,9 +176,14 @@ pub(crate) enum DiffContent {
     Binary,
 }
 
-pub struct Diff {
-    #[allow(unused)]
+#[derive(PartialEq, Eq, Hash)]
+pub struct DiffMetadata {
     pub(crate) from: ObjectId,
     pub(crate) to: ObjectId,
+    pub(crate) ignore_whitespace: bool,
+}
+
+pub struct Diff {
+    pub(crate) metadata: DiffMetadata,
     pub(crate) items: BTreeMap<DiffFileHeader, DiffContent>,
 }

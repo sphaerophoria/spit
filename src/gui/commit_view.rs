@@ -1,20 +1,64 @@
 use crate::{
-    git::{Commit, Diff, DiffContent, DiffFileHeader, ObjectId},
+    git::{Commit, Diff, DiffContent, DiffFileHeader, DiffMetadata, ObjectId},
+    gui::tristate_checkbox::TristateCheckbox,
     util::Cache,
 };
 
-use eframe::egui::{
-    text::LayoutJob, CollapsingHeader, Color32, Galley, ScrollArea, TextEdit, TextFormat,
-    TextStyle, Ui, Widget,
+use anyhow::{Error, Result};
+use log::error;
+
+use eframe::{
+    egui::{
+        text::LayoutJob, Align, CollapsingHeader, Color32, Galley, ScrollArea, TextEdit,
+        TextFormat, TextStyle, Ui, Widget,
+    },
+    epaint::text::cursor::CCursor,
 };
 
-use std::sync::Arc;
+use std::{fmt::Write, sync::Arc};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProcessedDiffOffset {
+    file_index: usize,
+    string_index: usize,
+}
+
+type FileDiffStrings = Vec<(DiffFileHeader, String)>;
+
+struct ProcessedDiff {
+    metadata: DiffMetadata,
+    file_diff_strings: FileDiffStrings,
+}
+
+impl TryFrom<Diff> for ProcessedDiff {
+    type Error = Error;
+    fn try_from(diff: Diff) -> Result<ProcessedDiff> {
+        let Diff { metadata, items } = diff;
+
+        let ordered_hunks = items
+            .into_iter()
+            .map(|(file, hunk)| Ok((file, diff_content_to_string(&hunk)?)))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(ProcessedDiff {
+            metadata,
+            file_diff_strings: ordered_hunks,
+        })
+    }
+}
 
 #[derive(PartialEq, Eq, Clone)]
 pub(super) struct DiffRequest {
     pub(super) ignore_whitespace: bool,
     pub(super) from: ObjectId,
     pub(super) to: ObjectId,
+}
+
+enum FilterWidgetAction {
+    None,
+    Next,
+    Prev,
+    Changed,
 }
 
 pub(super) enum CommitViewAction {
@@ -26,7 +70,10 @@ pub(super) enum CommitViewAction {
 pub(super) struct CommitView {
     diff_ignore_whitespace: bool,
     last_requested_diff: Option<DiffRequest>,
-    current_diff: Option<Diff>,
+    current_diff: Option<ProcessedDiff>,
+    search_text: String,
+    search_result_offsets: Vec<ProcessedDiffOffset>,
+    search_result_offset_index: usize,
 }
 
 impl CommitView {
@@ -40,7 +87,39 @@ impl CommitView {
     }
 
     pub(super) fn update_diff(&mut self, diff: Diff) {
-        self.current_diff = Some(diff);
+        match TryFrom::try_from(diff) {
+            Ok(d) => {
+                self.current_diff = Some(d);
+                self.update_search_results();
+            }
+            Err(e) => {
+                error!("Failed to render diff: {}", e);
+                self.current_diff = None;
+            }
+        }
+    }
+
+    fn decrement_offset_index(&mut self) {
+        if self.search_result_offset_index == 0 {
+            self.search_result_offset_index = self.search_result_offsets.len().saturating_sub(1);
+        } else {
+            self.search_result_offset_index -= 1;
+        }
+    }
+
+    fn increment_offset_index(&mut self) {
+        if self.search_result_offset_index >= self.search_result_offsets.len() - 1 {
+            self.search_result_offset_index = 0;
+        } else {
+            self.search_result_offset_index += 1;
+        }
+    }
+
+    fn update_search_results(&mut self) {
+        self.search_result_offset_index = 0;
+        if let Some(diff) = &self.current_diff {
+            self.search_result_offsets = find_in_diff(&diff.file_diff_strings, &self.search_text);
+        }
     }
 
     pub(super) fn show(
@@ -50,6 +129,7 @@ impl CommitView {
         selected_commit: Option<&ObjectId>,
     ) -> CommitViewAction {
         let mut force_expanded_state = None;
+        let mut jump_to_selected_highlight = false;
 
         ui.allocate_space(ui.style().spacing.item_spacing);
 
@@ -61,7 +141,34 @@ impl CommitView {
             if ui.button("Collapse all").clicked() {
                 force_expanded_state = Some(false);
             }
-            ui.checkbox(&mut self.diff_ignore_whitespace, "Ignore whitespace");
+
+            TristateCheckbox::new(
+                self.current_diff
+                    .as_ref()
+                    .map(|d| &d.metadata.ignore_whitespace)
+                    .unwrap_or(&self.diff_ignore_whitespace.clone()),
+                &mut self.diff_ignore_whitespace,
+                "Ignore whitespace",
+            )
+            .ui(ui);
+
+            match show_filter_widgets(ui, &mut self.search_text) {
+                FilterWidgetAction::Changed => {
+                    self.update_search_results();
+                    if !self.search_text.is_empty() {
+                        jump_to_selected_highlight = true;
+                    }
+                }
+                FilterWidgetAction::Prev => {
+                    self.decrement_offset_index();
+                    jump_to_selected_highlight = true;
+                }
+                FilterWidgetAction::Next => {
+                    self.increment_offset_index();
+                    jump_to_selected_highlight = true;
+                }
+                FilterWidgetAction::None => (),
+            }
         });
 
         ui.allocate_space(ui.style().spacing.item_spacing);
@@ -85,8 +192,17 @@ impl CommitView {
                     .ui(ui);
 
                 if let Some(diff) = &self.current_diff {
-                    if &diff.to == selected_commit {
-                        add_diff_hunks_to_ui(ui, diff, force_expanded_state);
+                    if &diff.metadata.to == selected_commit {
+                        add_diff_hunks_to_ui(
+                            ui,
+                            diff,
+                            force_expanded_state,
+                            self.search_text.len(),
+                            &self.search_result_offsets,
+                            self.search_result_offsets
+                                .get(self.search_result_offset_index),
+                            jump_to_selected_highlight,
+                        );
                     }
                 }
             });
@@ -131,6 +247,33 @@ fn construct_diff_request(
     })
 }
 
+fn show_filter_widgets(ui: &mut Ui, search_text: &mut String) -> FilterWidgetAction {
+    let text_response = TextEdit::singleline(search_text)
+        .hint_text("search")
+        .show(ui)
+        .response;
+
+    let prev_response = ui.button("prev");
+    let next_response = ui.button("next");
+
+    if text_response.changed() {
+        FilterWidgetAction::Changed
+    } else if text_response.lost_focus() && ui.input().key_pressed(eframe::egui::Key::Enter) {
+        text_response.request_focus();
+        if ui.input().modifiers.shift {
+            FilterWidgetAction::Prev
+        } else {
+            FilterWidgetAction::Next
+        }
+    } else if next_response.clicked() {
+        FilterWidgetAction::Next
+    } else if prev_response.clicked() {
+        FilterWidgetAction::Prev
+    } else {
+        FilterWidgetAction::None
+    }
+}
+
 fn gen_commit_header(
     selected_commit: &ObjectId,
     cached_commits: &Cache<ObjectId, Commit>,
@@ -150,7 +293,14 @@ fn gen_commit_header(
         .unwrap_or_else(String::new)
 }
 
-fn diff_view_layouter(ui: &Ui, s: &str, wrap_width: f32) -> Arc<Galley> {
+fn diff_view_layouter(
+    ui: &Ui,
+    s: &str,
+    wrap_width: f32,
+    selected_highlight_pos: Option<usize>,
+    mut highlight_positions: Vec<usize>,
+    highlight_len: usize,
+) -> Arc<Galley> {
     // NOTE: no caching here, I think our layout is cheap enough that it doesn't
     // matter, but we have to keep an eye on it
 
@@ -161,27 +311,74 @@ fn diff_view_layouter(ui: &Ui, s: &str, wrap_width: f32) -> Arc<Galley> {
 
     let default_color = ui.visuals().text_color();
     let font = ui.style().text_styles[&TextStyle::Monospace].clone();
+    let mut processed_chars = 0;
     for line in s.split_inclusive('\n') {
-        let color = match line.as_bytes()[0] {
+        let (line_highlight_positions, remaining_highlight_positions) =
+            std::mem::take(&mut highlight_positions)
+                .into_iter()
+                .partition(|&v| v < processed_chars + line.len());
+        highlight_positions = remaining_highlight_positions;
+
+        let line_color = match line.as_bytes()[0] {
             b'+' => Color32::LIGHT_GREEN,
             b'-' => Color32::LIGHT_RED,
             _ => default_color,
         };
-        job.append(
-            line,
-            0.0,
-            TextFormat {
-                font_id: font.clone(),
-                color,
-                ..Default::default()
-            },
-        );
+
+        let mut last_appended_idx = 0;
+        for highlight_pos in line_highlight_positions {
+            let highlight_pos_rel_line = highlight_pos - processed_chars;
+            job.append(
+                &line[last_appended_idx..highlight_pos_rel_line],
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: line_color,
+                    ..Default::default()
+                },
+            );
+
+            let highlight_color = get_highlight_color(&selected_highlight_pos, highlight_pos);
+
+            job.append(
+                &line[highlight_pos_rel_line..highlight_pos_rel_line + highlight_len],
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: highlight_color,
+                    ..Default::default()
+                },
+            );
+            last_appended_idx = highlight_pos_rel_line + highlight_len;
+        }
+
+        if last_appended_idx < line.len() {
+            job.append(
+                &line[last_appended_idx..],
+                0.0,
+                TextFormat {
+                    font_id: font.clone(),
+                    color: line_color,
+                    ..Default::default()
+                },
+            );
+        }
+
+        processed_chars += line.len();
     }
     ui.fonts().layout_job(job)
 }
 
-fn add_diff_hunks_to_ui(ui: &mut Ui, diff: &Diff, force_state: Option<bool>) {
-    for (file, content) in &diff.items {
+fn add_diff_hunks_to_ui(
+    ui: &mut Ui,
+    diff: &ProcessedDiff,
+    force_state: Option<bool>,
+    highlight_len: usize,
+    highlight_positions: &[ProcessedDiffOffset],
+    selected_highlight_pos: Option<&ProcessedDiffOffset>,
+    jump_to_selected: bool,
+) {
+    for (file_idx, (file, content)) in diff.file_diff_strings.iter().enumerate() {
         #[derive(Hash)]
         struct CommitViewId<'a> {
             from: &'a ObjectId,
@@ -189,35 +386,179 @@ fn add_diff_hunks_to_ui(ui: &mut Ui, diff: &Diff, force_state: Option<bool>) {
             file: &'a DiffFileHeader,
         }
 
+        let mut force_open_file = force_state;
+        if let Some(force_file_idx) = selected_highlight_pos.map(|o| o.file_index) {
+            if jump_to_selected && file_idx == force_file_idx {
+                force_open_file = Some(true);
+            }
+        }
+
         CollapsingHeader::new(file.to_string())
             .id_source(CommitViewId {
-                from: &diff.from,
-                to: &diff.to,
+                from: &diff.metadata.from,
+                to: &diff.metadata.to,
                 file,
             })
-            .open(force_state)
-            .show(ui, |ui| match content {
-                DiffContent::Patch(hunks) => {
-                    for (hunk, content) in hunks {
-                        let mut message = hunk.to_string();
-                        message.push_str(
-                            std::str::from_utf8(content)
-                                .unwrap_or("Patch content is not valid utf8"),
-                        );
+            .open(force_open_file)
+            .show(ui, |ui| {
+                // NOTE: It would be nice if we could use the integrated selection to mark the
+                // searched text. Unfortunately the TextEdit can only show selected text when the
+                // widget has focus[1]. There's a chance that we could do some trickery by setting
+                // focus before rendering the widget and then restoring focus, but that seems like
+                // it would cause more UX confusion. So we just color the text in the layouter
+                //
+                // [1]: https://github.com/emilk/egui/blob/a05520b9d3abcfc5fe0a963c621b8e398005fa02/egui/src/widgets/text_edit/builder.rs#L490
 
-                        TextEdit::multiline(&mut message.as_str())
-                            .font(TextStyle::Monospace)
-                            .desired_width(ui.available_width())
-                            .layouter(&mut diff_view_layouter)
-                            .ui(ui);
+                let this_highlight_positions: Vec<usize> = highlight_positions
+                    .iter()
+                    .filter_map(|pos| {
+                        if pos.file_index == file_idx {
+                            Some(pos.string_index)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                let file_selected_highlight_pos = selected_highlight_pos.and_then(|pos| {
+                    if pos.file_index == file_idx {
+                        Some(pos.string_index)
+                    } else {
+                        None
+                    }
+                });
+
+                let response = TextEdit::multiline(&mut content.as_str())
+                    .font(TextStyle::Monospace)
+                    .desired_width(ui.available_width())
+                    .layouter(&mut |ui, s, wrap_width| {
+                        diff_view_layouter(
+                            ui,
+                            s,
+                            wrap_width,
+                            file_selected_highlight_pos,
+                            this_highlight_positions.clone(),
+                            highlight_len,
+                        )
+                    })
+                    .show(ui);
+
+                if let Some(selected_highlight_pos) = selected_highlight_pos {
+                    if jump_to_selected && selected_highlight_pos.file_index == file_idx {
+                        let cursor = response
+                            .galley
+                            .from_ccursor(CCursor::new(selected_highlight_pos.string_index));
+                        let mut pos = response.galley.pos_from_cursor(&cursor);
+                        pos.min.x += response.text_draw_pos.x;
+                        pos.min.y += response.text_draw_pos.y;
+                        pos.max = pos.min;
+                        ui.scroll_to_rect(pos, Some(Align::Center));
                     }
                 }
-                DiffContent::Binary => {
-                    TextEdit::multiline(&mut "Binary content changed")
-                        .font(TextStyle::Monospace)
-                        .desired_width(ui.available_width())
-                        .ui(ui);
-                }
             });
+    }
+}
+
+fn diff_content_to_string(content: &DiffContent) -> Result<String> {
+    let s = match content {
+        DiffContent::Patch(hunks) => {
+            let mut s = String::new();
+            for (hunk, content) in hunks {
+                write!(s, "{}", hunk)?;
+                write!(s, "{}", std::str::from_utf8(content)?)?;
+            }
+            s
+        }
+        DiffContent::Binary => "Binary content changed".to_string(),
+    };
+
+    Ok(s)
+}
+
+fn find_in_diff(diff: &FileDiffStrings, text: &str) -> Vec<ProcessedDiffOffset> {
+    diff.iter()
+        .enumerate()
+        .flat_map(|(file_index, file)| {
+            file.1
+                .match_indices(text)
+                .map(move |(string_index, _)| ProcessedDiffOffset {
+                    file_index,
+                    string_index,
+                })
+        })
+        .collect()
+}
+
+/// Function that determines the highlight color during view layout
+/// selected_pos should be relative to the entire string being layouted
+/// line_pos should be how many characters were processed bef
+fn get_highlight_color(selected_pos: &Option<usize>, highlight_pos: usize) -> Color32 {
+    match selected_pos {
+        Some(v) => {
+            if *v == highlight_pos {
+                Color32::YELLOW
+            } else {
+                Color32::LIGHT_BLUE
+            }
+        }
+        None => Color32::LIGHT_BLUE,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn find_in_diff_no_match() {
+        let file_diff_strings = FromIterator::from_iter([(
+            DiffFileHeader {
+                old_file: None,
+                new_file: None,
+            },
+            "Test".into(),
+        )]);
+        assert_eq!(find_in_diff(&file_diff_strings, "asdfasdf"), vec![]);
+    }
+
+    #[test]
+    fn find_in_diff_sequence() {
+        let file_diff_strings = FromIterator::from_iter([
+            (
+                DiffFileHeader {
+                    old_file: None,
+                    new_file: None,
+                },
+                "TestTest".into(),
+            ),
+            (
+                DiffFileHeader {
+                    old_file: None,
+                    new_file: None,
+                },
+                "TestTest".into(),
+            ),
+        ]);
+        assert_eq!(
+            find_in_diff(&file_diff_strings, "Test"),
+            vec![
+                ProcessedDiffOffset {
+                    file_index: 0,
+                    string_index: 0
+                },
+                ProcessedDiffOffset {
+                    file_index: 0,
+                    string_index: 4
+                },
+                ProcessedDiffOffset {
+                    file_index: 1,
+                    string_index: 0
+                },
+                ProcessedDiffOffset {
+                    file_index: 1,
+                    string_index: 4
+                },
+            ]
+        );
     }
 }

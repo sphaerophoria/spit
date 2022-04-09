@@ -1,7 +1,7 @@
 use crate::{
     git::{
         decompress, pack::Pack, Branch, Commit, CommitMetadata, Diff, DiffContent, DiffFileHeader,
-        ObjectId, ReferenceId,
+        DiffMetadata, ObjectId, ReferenceId,
     },
     util::Timer,
 };
@@ -273,8 +273,11 @@ impl Repo {
 
         let mut current_hunk_header = String::new();
         let mut output = Diff {
-            from: id1.clone(),
-            to: id2.clone(),
+            metadata: DiffMetadata {
+                from: id1.clone(),
+                to: id2.clone(),
+                ignore_whitespace,
+            },
             items: Default::default(),
         };
         let mut binary_files = Vec::new();
