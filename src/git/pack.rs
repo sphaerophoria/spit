@@ -318,8 +318,20 @@ impl PackData {
         match header.typ {
             ObjectType::Commit => {
                 let pack_obj_data_start = pack_obj_location + pack_obj_data_offset;
-                let pack_obj_data =
-                    &self.data[pack_obj_data_start..pack_obj_data_start + header.size];
+                // As far as I can tell, the size found in the header is not guaranteed to be
+                // correct unless we are using it for delta patching. Reading through packfile.c in
+                // git's repo it does not look like the size value is used for regular object
+                // types.
+                //
+                // On commit 7b7abfe3dd81d659a0889f88965168f7eef8c5c6 in the linux kernel I see a
+                // header size of 214, but that ends up truncating the commit and I cannot extract
+                // the committer date.
+                //
+                // Just provide the full file and let the decompressor go wild I guess
+                //
+                // I may just be patching over a bug, but even if I copy paste the logic from
+                // packfile.c into read_pack_obj_header I end up with the same results
+                let pack_obj_data = &self.data[pack_obj_data_start..];
                 decompress::decompress_commit_metadata(pack_obj_data, &mut decompressor, true)
             }
             ObjectType::OffsetDelta => {
@@ -387,6 +399,7 @@ impl PackData {
 
                 let mut parents: Vec<ObjectId> = Vec::new();
                 let mut timestamp = None;
+                let mut committer_timestamp = None;
 
                 for line in patch_buf.split(|&x| x == b'\n') {
                     if line.is_empty() {
@@ -397,33 +410,19 @@ impl PackData {
                         // FIXME: Shouldn't just blindly  look for the strign parent
                         faster_hex::hex_decode(&line[7..47], parents.last_mut().unwrap()).unwrap()
                     } else if line.starts_with(b"author") {
-                        // FIXME: duplication with decompress
-                        let mut found_spaces = 0;
-                        let timestamp_start = line
-                            .iter()
-                            .rposition(|x| {
-                                if *x == b' ' {
-                                    found_spaces += 1;
-                                }
-
-                                found_spaces == 2
-                            })
-                            .context("Could not find start of timestamp")?
-                            + 1;
-
-                        let timestamp_buf = &line[timestamp_start..];
-                        let timestamp_str =
-                            std::str::from_utf8(timestamp_buf).context("Invalid timestamp buf")?;
-                        timestamp = Some(
-                            chrono::DateTime::parse_from_str(timestamp_str, "%s %z")
-                                .unwrap()
-                                .with_timezone(&chrono::Utc),
-                        );
+                        timestamp = Some(decompress::extract_timestamp_from_buf(line)?);
+                    } else if line.starts_with(b"committer") {
+                        committer_timestamp = Some(decompress::extract_timestamp_from_buf(line)?);
                     }
                 }
 
                 let timestamp = timestamp.unwrap();
-                Ok(CommitMetadataWithoutId { parents, timestamp })
+                let committer_timestamp = committer_timestamp.unwrap();
+                Ok(CommitMetadataWithoutId {
+                    parents,
+                    author_timestamp: timestamp,
+                    committer_timestamp,
+                })
             }
             _ => bail!(format!("Unimplemented parser for {}", header.typ)),
         }

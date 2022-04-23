@@ -1,4 +1,4 @@
-use crate::git::{CommitMetadata, ObjectId, Repo};
+use crate::git::{CommitMetadata, ObjectId, Repo, SortType};
 
 use anyhow::{Context, Result};
 use log::debug;
@@ -247,10 +247,14 @@ fn finish_edges(tails: &[TailData], end_y: i32, edges: &mut Vec<Edge>) -> Result
     Ok(())
 }
 
-pub(crate) fn build_git_history_graph(repo: &mut Repo, heads: &[ObjectId]) -> Result<HistoryGraph> {
+pub(crate) fn build_git_history_graph(
+    repo: &mut Repo,
+    heads: &[ObjectId],
+    sort_type: SortType,
+) -> Result<HistoryGraph> {
     let mut graph_builder = GraphBuilder::default();
 
-    let revwalk = repo.metadata_iter(heads)?;
+    let revwalk = repo.metadata_iter(heads, sort_type)?;
     for metadata in revwalk {
         graph_builder
             .process_commit(metadata)
@@ -292,7 +296,7 @@ mod tests {
 
         let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
         let all_heads = get_all_heads(&repo)?;
-        let graph = build_git_history_graph(&mut repo, &all_heads)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 0);
@@ -320,7 +324,7 @@ mod tests {
 
         let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
         let all_heads = get_all_heads(&repo)?;
-        let graph = build_git_history_graph(&mut repo, &all_heads)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 4);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 1);
@@ -349,7 +353,7 @@ mod tests {
 
         let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
         let all_heads = get_all_heads(&repo)?;
-        let graph = build_git_history_graph(&mut repo, &all_heads)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 4);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 0);
@@ -379,7 +383,7 @@ mod tests {
 
         let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
         let all_heads = get_all_heads(&repo)?;
-        let graph = build_git_history_graph(&mut repo, &all_heads)?;
+        let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 6);
         assert_eq!(graph.nodes[0].position.x, 0);
         assert_eq!(graph.nodes[1].position.x, 1);

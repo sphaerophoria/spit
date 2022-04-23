@@ -1,11 +1,11 @@
 use crate::{
     app::{RepoState, ViewState},
-    git::{Branch, ReferenceId},
+    git::{Branch, ReferenceId, SortType},
     gui::{reference_richtext, tristate_checkbox::TristateCheckbox, try_set_clipboard},
 };
 
 use clipboard::ClipboardContext;
-use eframe::egui::{ScrollArea, TextEdit, Ui, Widget};
+use eframe::egui::{ComboBox, ScrollArea, TextEdit, Ui, Widget};
 
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -44,6 +44,23 @@ impl Sidebar {
         pending_view_state: &mut ViewState,
         clipboard: &mut ClipboardContext,
     ) -> SidebarAction {
+        ComboBox::from_label("Sort Type")
+            .selected_text(sort_type_label(&pending_view_state.sort_type))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut pending_view_state.sort_type,
+                    SortType::AuthorTimestamp,
+                    sort_type_label(&SortType::AuthorTimestamp),
+                );
+                ui.selectable_value(
+                    &mut pending_view_state.sort_type,
+                    SortType::CommitterTimestamp,
+                    sort_type_label(&SortType::CommitterTimestamp),
+                );
+            });
+
+        ui.separator();
+
         if TextEdit::singleline(&mut self.filter_text)
             .desired_width(ui.available_width())
             .hint_text("Branch filter")
@@ -128,6 +145,13 @@ fn filter_branches<'a>(
             None
         }
     })
+}
+
+fn sort_type_label(sort_type: &SortType) -> &str {
+    match sort_type {
+        SortType::CommitterTimestamp => "Committer",
+        SortType::AuthorTimestamp => "Author",
+    }
 }
 
 #[cfg(test)]

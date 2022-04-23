@@ -17,6 +17,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum SortType {
+    AuthorTimestamp,
+    CommitterTimestamp,
+}
+
+impl Default for SortType {
+    fn default() -> SortType {
+        SortType::CommitterTimestamp
+    }
+}
+
 pub(crate) struct Repo {
     git2_repo: git2::Repository,
     git_dir: PathBuf,
@@ -140,6 +152,7 @@ impl Repo {
     pub(crate) fn metadata_iter(
         &mut self,
         heads: &[ObjectId],
+        sort_type: SortType,
     ) -> Result<impl Iterator<Item = &CommitMetadata>> {
         // FIXME: Fall back on libgit2 on failure
 
@@ -150,6 +163,7 @@ impl Repo {
         // directly
 
         build_sorted_metadata_indicies(
+            sort_type,
             &walked_indices,
             child_indices,
             &self.metadata_lookup,
@@ -343,6 +357,7 @@ fn git2_branch_object(branch: git2::Branch) -> Result<ObjectId> {
 }
 
 fn build_sorted_metadata_indicies<'a>(
+    sort_type: SortType,
     walked_indices: &HashSet<usize>,
     mut child_indices: Vec<Vec<usize>>,
     index_lookup: &HashMap<ObjectId, usize>,
@@ -355,7 +370,7 @@ fn build_sorted_metadata_indicies<'a>(
     let mut timer = Timer::new();
 
     let mut no_child_options = get_childless_indices(walked_indices, &child_indices);
-    sort_commit_metadata_indices_by_timestamp(&mut no_child_options, storage);
+    no_child_options.sort_by(|&a, &b| compare_commit_metadata(&storage[a], &storage[b], sort_type));
     debug!(
         "Filtering childless indices took: {}",
         timer.elapsed().as_secs_f32()
@@ -379,9 +394,9 @@ fn build_sorted_metadata_indicies<'a>(
             }
 
             if child_indices[parent_idx].is_empty() {
-                let insertion_pos = match no_child_options
-                    .binary_search_by(|&x| storage[x].timestamp.cmp(&storage[parent_idx].timestamp))
-                {
+                let insertion_pos = match no_child_options.binary_search_by(|&x| {
+                    compare_commit_metadata(&storage[x], &storage[parent_idx], sort_type)
+                }) {
                     // Duplicate timestamps are fine
                     Ok(v) => v,
                     Err(v) => v,
@@ -399,9 +414,15 @@ fn build_sorted_metadata_indicies<'a>(
     Ok(sorted_indices.into_iter().map(|x| &storage[x]))
 }
 
-/// Sorts the indices so that the latest metadata indices are at the end of the array
-fn sort_commit_metadata_indices_by_timestamp(indices: &mut [usize], storage: &[CommitMetadata]) {
-    indices.sort_by(|&a, &b| storage[a].timestamp.cmp(&storage[b].timestamp));
+fn compare_commit_metadata(
+    a: &CommitMetadata,
+    b: &CommitMetadata,
+    sort_type: SortType,
+) -> std::cmp::Ordering {
+    match sort_type {
+        SortType::AuthorTimestamp => a.author_timestamp.cmp(&b.author_timestamp),
+        SortType::CommitterTimestamp => a.committer_timestamp.cmp(&b.committer_timestamp),
+    }
 }
 
 /// Find the indices in child_indices where there are no children
@@ -693,7 +714,10 @@ mod test {
 
         let mut repo = Repo::new(git_dir.path().to_path_buf())?;
         let original_head = repo
-            .metadata_iter(&["83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?])?
+            .metadata_iter(
+                &["83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?],
+                SortType::CommitterTimestamp,
+            )?
             .next()
             .unwrap()
             .clone();
@@ -705,7 +729,10 @@ mod test {
             .output()?;
 
         let object_id = repo.find_reference_object(&ReferenceId::head())?;
-        let new_head = repo.metadata_iter(&[object_id])?.next().unwrap();
+        let new_head = repo
+            .metadata_iter(&[object_id], SortType::CommitterTimestamp)?
+            .next()
+            .unwrap();
 
         assert_ne!(original_head.id, new_head.id);
         assert_eq!(new_head.parents.len(), 1);

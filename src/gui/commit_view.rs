@@ -284,10 +284,15 @@ fn gen_commit_header(
             format!(
                 "id: {}\n\
                     author: {}\n\
-                    timestamp: {}\n\
+                    author timestamp: {}\n\
+                    committer timestamp: {}\n\
                     \n\
                     {}",
-                commit.metadata.id, commit.author, commit.metadata.timestamp, commit.message
+                commit.metadata.id,
+                commit.author,
+                commit.metadata.author_timestamp,
+                commit.metadata.committer_timestamp,
+                commit.message
             )
         })
         .unwrap_or_else(String::new)

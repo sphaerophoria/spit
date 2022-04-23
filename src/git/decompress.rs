@@ -1,6 +1,7 @@
 use crate::git::{CommitMetadataWithoutId, ObjectId};
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use flate2::Decompress;
 
 pub(super) fn decompress_commit_metadata(
@@ -88,45 +89,88 @@ pub(super) fn decompress_commit_metadata(
     // Note that we could also extract the author nearly for free here as well with 0 allocations
     // by just finding the ranges of the mapped data, but that seems difficult and unnecessary for
     // the time being
-    let mut author_buf = parent_buf;
-    const AUTHOR_RANGES: [std::ops::Range<usize>; 2] =
-        [0..PARENT_LINE_LEN / 2, PARENT_LINE_LEN / 2..PARENT_LINE_LEN];
-
+    let author_buf = &mut parent_buf;
     assert!(author_buf.starts_with(b"author"));
-
-    let mut author_buf_idx = 0usize;
-    if !author_buf[AUTHOR_RANGES[author_buf_idx].clone()].contains(&b'\n') {
-        author_buf_idx = 1;
-        loop {
-            if author_buf[AUTHOR_RANGES[author_buf_idx].clone()].contains(&b'\n') {
-                break;
-            }
-
-            author_buf_idx = (author_buf_idx + 1) % 2;
-            let total_in = decompressor.total_in() as usize;
-            decompressor
-                .decompress(
-                    &commit[total_in..],
-                    &mut author_buf[AUTHOR_RANGES[author_buf_idx].clone()],
-                    flate2::FlushDecompress::None,
-                )
-                .context("Failed to decompress partial author line")?;
-        }
-    }
-
-    // Put the buffer in the right order to make the rest of the parsing easier
-    if author_buf_idx == 0 {
-        assert!(PARENT_LINE_LEN % 2 == 0);
-        for i in 0..(PARENT_LINE_LEN / 2) {
-            author_buf.swap(i, i + PARENT_LINE_LEN / 2);
-        }
-    }
+    continue_extraction_until_newline(author_buf, 0, commit, decompressor)
+        .context("Failed to author newline")?;
 
     let newline_pos = author_buf
         .iter()
         .position(|x| *x == b'\n')
         .context("Did not find newline in object data")?;
     let timestamp_buf = &author_buf[..newline_pos];
+
+    let timestamp =
+        extract_timestamp_from_buf(timestamp_buf).context("Failed to get author timestamp")?;
+
+    let committer_buf = author_buf;
+
+    let line_start = newline_pos + 1;
+    let start_len = committer_buf.len() - line_start;
+    assert!(committer_buf[line_start..].starts_with(&b"committer"[..usize::min(start_len, 9)]));
+    continue_extraction_until_newline(committer_buf, line_start, commit, decompressor)
+        .context("Failed to find committer newline")?;
+
+    let newline_pos = committer_buf
+        .iter()
+        .position(|x| *x == b'\n')
+        .unwrap_or(committer_buf.len());
+
+    let timestamp_buf = &committer_buf[..newline_pos];
+    let committer_timestamp =
+        extract_timestamp_from_buf(timestamp_buf).context("Failed to get committer timestamp")?;
+    Ok(CommitMetadataWithoutId {
+        parents,
+        author_timestamp: timestamp,
+        committer_timestamp,
+    })
+}
+
+fn continue_extraction_until_newline(
+    buf: &mut [u8],
+    buf_start_pos: usize,
+    commit: &[u8],
+    decompressor: &mut Decompress,
+) -> Result<()> {
+    if buf[buf_start_pos..].contains(&b'\n') {
+        return Ok(());
+    }
+
+    let half_buf_len = buf.len() / 2;
+    let buf_ranges: [std::ops::Range<usize>; 2] = [0..half_buf_len, half_buf_len..buf.len()];
+
+    let mut buf_idx = 0;
+    loop {
+        let total_in = decompressor.total_in() as usize;
+        decompressor
+            .decompress(
+                &commit[total_in..],
+                &mut buf[buf_ranges[buf_idx].clone()],
+                flate2::FlushDecompress::None,
+            )
+            .context("Failed to decompress partial author line")?;
+
+        if buf[buf_ranges[buf_idx].clone()].contains(&b'\n')
+            || decompressor.total_in() as usize == commit.len()
+        {
+            break;
+        }
+
+        buf_idx = (buf_idx + 1) % 2;
+    }
+
+    // Swap buffers if they're in the wrong order to simplify upstream processing
+    if buf_idx == 0 {
+        assert!(buf.len() % 2 == 0);
+        for i in 0..(buf.len() / 2) {
+            buf.swap(i, i + buf.len() / 2);
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn extract_timestamp_from_buf(timestamp_buf: &[u8]) -> Result<DateTime<Utc>> {
     let mut found_spaces = 0;
     let timestamp_start = timestamp_buf
         .iter()
@@ -142,8 +186,5 @@ pub(super) fn decompress_commit_metadata(
 
     let timestamp_buf = &timestamp_buf[timestamp_start..];
     let timestamp_str = std::str::from_utf8(timestamp_buf).context("Invalid timestamp buf")?;
-    let timestamp =
-        chrono::DateTime::parse_from_str(timestamp_str, "%s %z")?.with_timezone(&chrono::Utc);
-
-    Ok(CommitMetadataWithoutId { parents, timestamp })
+    Ok(chrono::DateTime::parse_from_str(timestamp_str, "%s %z")?.with_timezone(&chrono::Utc))
 }

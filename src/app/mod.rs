@@ -4,7 +4,7 @@ use crate::{
     app::priority_queue::PriorityQueue,
     git::{
         self, build_git_history_graph, Branch, Commit, Diff, HistoryGraph, ObjectId, ReferenceId,
-        Repo,
+        Repo, SortType,
     },
 };
 
@@ -32,6 +32,7 @@ pub struct RepoState {
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ViewState {
     pub(crate) selected_references: HashSet<ReferenceId>,
+    pub(crate) sort_type: SortType,
 }
 
 impl ViewState {
@@ -265,7 +266,7 @@ impl App {
                         .map(|id| repo.find_reference_object(id))
                         .collect::<Result<Vec<_>>>()?;
 
-                    let graph = build_git_history_graph(repo, &heads)?;
+                    let graph = build_git_history_graph(repo, &heads, view_state.sort_type)?;
 
                     self.tx
                         .send(AppEvent::CommitGraphFetched(view_state, graph))
@@ -380,6 +381,7 @@ mod test {
                 ReferenceId::RemoteBranch("Test".to_string()),
                 ReferenceId::LocalBranch("Test".to_string()),
             ]),
+            sort_type: SortType::CommitterTimestamp,
         };
 
         view_state.update_with_repo_state(&RepoState {
@@ -412,6 +414,7 @@ mod test {
     fn view_state_preserve_no_selection() -> Result<()> {
         let mut view_state = ViewState {
             selected_references: Default::default(),
+            sort_type: SortType::CommitterTimestamp,
         };
 
         view_state.update_with_repo_state(&RepoState {
@@ -435,6 +438,7 @@ mod test {
             selected_references: FromIterator::from_iter([ReferenceId::LocalBranch(
                 "master".into(),
             )]),
+            sort_type: SortType::CommitterTimestamp,
         };
 
         view_state.update_with_repo_state(&RepoState {

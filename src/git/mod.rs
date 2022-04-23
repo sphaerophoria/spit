@@ -7,7 +7,7 @@ mod repo;
 
 pub(crate) use graph::{build_git_history_graph, HistoryGraph};
 pub(crate) use object_id::ObjectId;
-pub(crate) use repo::Repo;
+pub(crate) use repo::{Repo, SortType};
 
 use anyhow::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -17,7 +17,8 @@ use std::{collections::BTreeMap, fmt, path::PathBuf};
 pub(crate) struct CommitMetadata {
     pub(crate) id: ObjectId,
     pub(crate) parents: Vec<ObjectId>,
-    pub(crate) timestamp: DateTime<Utc>,
+    pub(crate) author_timestamp: DateTime<Utc>,
+    pub(crate) committer_timestamp: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -122,7 +123,8 @@ pub struct Commit {
 #[derive(Debug, Clone)]
 struct CommitMetadataWithoutId {
     pub(crate) parents: Vec<ObjectId>,
-    pub(crate) timestamp: DateTime<Utc>,
+    pub(crate) author_timestamp: DateTime<Utc>,
+    pub(crate) committer_timestamp: DateTime<Utc>,
 }
 
 impl CommitMetadataWithoutId {
@@ -130,7 +132,8 @@ impl CommitMetadataWithoutId {
         CommitMetadata {
             id,
             parents: self.parents,
-            timestamp: self.timestamp,
+            author_timestamp: self.author_timestamp,
+            committer_timestamp: self.committer_timestamp,
         }
     }
 }

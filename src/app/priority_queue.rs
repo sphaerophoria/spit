@@ -47,7 +47,10 @@ impl PriorityQueue {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{app::ViewState, git::ReferenceId};
+    use crate::{
+        app::ViewState,
+        git::{ReferenceId, SortType},
+    };
     use std::sync::mpsc;
 
     macro_rules! is_enum_variant {
@@ -93,6 +96,7 @@ mod test {
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
                 selected_references: FromIterator::from_iter([ReferenceId::head()]),
+                sort_type: SortType::CommitterTimestamp,
             },
         })?;
         tx.send(AppRequest::GetCommitGraph {
@@ -100,6 +104,7 @@ mod test {
             viewer_id: "Viewer_1".into(),
             view_state: ViewState {
                 selected_references: Default::default(),
+                sort_type: SortType::CommitterTimestamp,
             },
         })?;
         tx.send(AppRequest::GetCommitGraph {
@@ -109,6 +114,7 @@ mod test {
                 selected_references: FromIterator::from_iter([ReferenceId::LocalBranch(
                     "master".into(),
                 )]),
+                sort_type: SortType::CommitterTimestamp,
             },
         })?;
 
