@@ -109,6 +109,12 @@ impl GuiInner {
                 self.view_state = view_state;
                 self.commit_log.update_graph(graph);
             }
+            AppEvent::SearchFinished {
+                viewer_id: _,
+                matched_id,
+            } => {
+                self.commit_log.search_finished(matched_id);
+            }
             AppEvent::RepoStateUpdated(repo_state) => {
                 if self.repo_state.repo != repo_state.repo {
                     self.reset();
@@ -211,6 +217,19 @@ impl GuiInner {
                     self.tx
                         .send(AppRequest::CherryPick((*self.repo_state).clone(), id))
                         .context("Failed to send delete request")?;
+                }
+                commit_log::CommitLogAction::Search {
+                    commit_list,
+                    search_string,
+                } => {
+                    self.tx
+                        .send(AppRequest::Search {
+                            expected_repo: self.repo_state.repo.clone(),
+                            viewer_id: "GUI".into(),
+                            search_string,
+                            commit_list,
+                        })
+                        .context("Failed to request search")?;
                 }
             }
         }

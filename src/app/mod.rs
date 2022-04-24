@@ -74,6 +74,12 @@ pub enum AppRequest {
         to: ObjectId,
         ignore_whitespace: bool,
     },
+    Search {
+        expected_repo: PathBuf,
+        viewer_id: String,
+        commit_list: Vec<ObjectId>,
+        search_string: String,
+    },
     Checkout(RepoState, CheckoutItem),
     Delete(RepoState, ReferenceId),
     CherryPick(RepoState, ObjectId),
@@ -84,8 +90,18 @@ pub enum AppEvent {
     OutputLogged(String),
     RepoStateUpdated(RepoState),
     CommitGraphFetched(ViewState, HistoryGraph),
-    CommitFetched { repo: PathBuf, commit: Commit },
-    DiffFetched { repo: PathBuf, diff: Diff },
+    CommitFetched {
+        repo: PathBuf,
+        commit: Commit,
+    },
+    DiffFetched {
+        repo: PathBuf,
+        diff: Diff,
+    },
+    SearchFinished {
+        viewer_id: String,
+        matched_id: Option<ObjectId>,
+    },
     Error(String),
 }
 
@@ -239,6 +255,44 @@ impl App {
                     diff,
                 })?;
             }
+            AppRequest::Search {
+                expected_repo,
+                viewer_id,
+                commit_list,
+                search_string,
+            } => {
+                let repo = self
+                    .repo
+                    .as_mut()
+                    .ok_or_else(|| Error::msg("Commit requested without valid repo"))?;
+
+                if repo.repo_root() != expected_repo {
+                    bail!(
+                        "Current repo does not match expected repo: {}, {}",
+                        repo.repo_root().display(),
+                        expected_repo.display()
+                    );
+                }
+
+                let mut matched_id = None;
+                for id in commit_list {
+                    let commit = repo
+                        .get_commit(&id)
+                        .context("Search requested with invalid id")?;
+
+                    if commit_matches_search(&commit, &search_string) {
+                        matched_id = Some(id);
+                        break;
+                    }
+                }
+
+                self.tx
+                    .send(AppEvent::SearchFinished {
+                        viewer_id,
+                        matched_id,
+                    })
+                    .context("Failed to send search response")?;
+            }
             AppRequest::OpenRepo(path) => {
                 let mut repo = Repo::new(path).context("Failed to load git history")?;
 
@@ -367,6 +421,17 @@ fn spawn_watcher(app_tx: Sender<AppRequest>) -> Result<RecommendedWatcher> {
     });
 
     Ok(notifier)
+}
+
+pub fn commit_matches_search(commit: &Commit, search: &str) -> bool {
+    if commit.metadata.id.to_string().starts_with(search)
+        || commit.author.contains(search)
+        || commit.message.contains(search)
+    {
+        return true;
+    }
+
+    false
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use crate::{
         graph::{Edge, GraphPoint},
         Commit, HistoryGraph, ObjectId, ReferenceId,
     },
-    gui::{reference_color, reference_underline, try_set_clipboard},
+    gui::{reference_color, reference_underline, try_set_clipboard, SearchAction, SearchBar},
     util::Cache,
 };
 
@@ -144,12 +144,69 @@ fn add_no_wrap_button(ui: &mut Ui, label: &str) -> Response {
     Button::new(label).wrap(false).ui(ui)
 }
 
+fn generate_search<'a, T>(
+    len: usize,
+    selected_commit: Option<&ObjectId>,
+    iter: T,
+    search_string: String,
+) -> CommitLogAction
+where
+    T: Iterator<Item = &'a ObjectId>,
+{
+    let mut commit_list = Vec::with_capacity(len);
+    let mut rotate_pos = 0;
+    for (i, id) in iter.enumerate() {
+        if Some(id) == selected_commit {
+            rotate_pos = i + 1;
+        }
+
+        commit_list.push(id.clone());
+    }
+
+    commit_list.rotate_left(rotate_pos);
+
+    CommitLogAction::Search {
+        commit_list,
+        search_string,
+    }
+}
+
+fn generate_search_next(
+    commit_graph: &HistoryGraph,
+    selected_commit: &Option<ObjectId>,
+    search_string: String,
+) -> CommitLogAction {
+    generate_search(
+        commit_graph.nodes.len(),
+        selected_commit.as_ref(),
+        commit_graph.nodes.iter().map(|x| &x.id),
+        search_string,
+    )
+}
+
+fn generate_search_prev(
+    commit_graph: &HistoryGraph,
+    selected_commit: &Option<ObjectId>,
+    search_string: String,
+) -> CommitLogAction {
+    generate_search(
+        commit_graph.nodes.len(),
+        selected_commit.as_ref(),
+        commit_graph.nodes.iter().rev().map(|x| &x.id),
+        search_string,
+    )
+}
+
 pub(super) enum CommitLogAction {
     FetchCommit(ObjectId),
     CheckoutObject(ObjectId),
     CheckoutReference(ReferenceId),
     DeleteReference(ReferenceId),
     CherryPick(ObjectId),
+    Search {
+        commit_list: Vec<ObjectId>,
+        search_string: String,
+    },
 }
 
 #[derive(Default)]
@@ -157,6 +214,8 @@ pub(super) struct CommitLog {
     repo_state: Arc<RepoState>,
     commit_graph: Option<HistoryGraph>,
     selected_commit: Option<ObjectId>,
+    next_selected_commit: Option<ObjectId>,
+    search_string: String,
 }
 
 impl CommitLog {
@@ -168,6 +227,10 @@ impl CommitLog {
         // Sort the start positions in increasing order
         commit_graph.edges.sort_by(|a, b| a.a.y.cmp(&b.a.y));
         self.commit_graph = Some(commit_graph);
+    }
+
+    pub(super) fn search_finished(&mut self, id: Option<ObjectId>) {
+        self.next_selected_commit = id;
     }
 
     pub(super) fn reset(&mut self) {
@@ -186,6 +249,8 @@ impl CommitLog {
         commit_cache: &Cache<ObjectId, Commit>,
         clipboard: &mut ClipboardContext,
     ) -> Vec<CommitLogAction> {
+        let search_action = SearchBar::new(&mut self.search_string).show(ui);
+
         let commit_graph = match &self.commit_graph {
             Some(v) => v,
             None => return Vec::new(),
@@ -194,6 +259,21 @@ impl CommitLog {
         if commit_graph.nodes.is_empty() {
             return Vec::new();
         }
+
+        let mut actions = Vec::new();
+        match search_action {
+            SearchAction::Next => actions.push(generate_search_next(
+                commit_graph,
+                &self.selected_commit,
+                self.search_string.clone(),
+            )),
+            SearchAction::Prev => actions.push(generate_search_prev(
+                commit_graph,
+                &self.selected_commit,
+                self.search_string.clone(),
+            )),
+            _ => (),
+        };
 
         let text_style = TextStyle::Body;
         let row_height = ui.text_style_height(&text_style);
@@ -205,12 +285,28 @@ impl CommitLog {
                     || row_range.start > commit_graph.nodes.len()
                 {
                     ui.scroll_to_cursor(None);
-                    return Vec::new();
+                    return;
                 }
 
                 let converter = PositionConverter::new(ui, row_height, row_range.clone());
 
-                let mut actions = Vec::new();
+                if let Some(next_selected_commit) = &mut self.next_selected_commit {
+                    self.selected_commit = Some(next_selected_commit.clone());
+
+                    let selected_pos = commit_graph
+                        .nodes
+                        .iter()
+                        .position(|node| &node.id == next_selected_commit);
+
+                    if let Some(selected_pos) = selected_pos {
+                        let min_y = converter.graph_y_to_ui_y(selected_pos as i32);
+                        let max_y = converter.graph_y_to_ui_y((selected_pos + 1) as i32);
+                        let min_pos = Pos2::new(0.0, min_y);
+                        let max_pos = Pos2::new(0.0, max_y);
+                        ui.scroll_to_rect(Rect::from_min_max(min_pos, max_pos), None);
+                    }
+                }
+                self.next_selected_commit = None;
 
                 let max_edge_x = render_edges(ui, &commit_graph.edges, &converter, &row_range);
                 let text_rect = converter.text_rect(max_edge_x);
@@ -330,9 +426,8 @@ impl CommitLog {
                         }
                     });
                 }
+            });
 
-                actions
-            })
-            .inner
+        actions
     }
 }
