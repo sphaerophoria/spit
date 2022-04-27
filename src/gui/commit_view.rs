@@ -1,6 +1,6 @@
 use crate::{
     git::{Commit, Diff, DiffContent, DiffFileHeader, DiffMetadata, ObjectId},
-    gui::tristate_checkbox::TristateCheckbox,
+    gui::{tristate_checkbox::TristateCheckbox, SearchAction, SearchBar},
     util::Cache,
 };
 
@@ -54,13 +54,6 @@ pub(super) struct DiffRequest {
     pub(super) to: ObjectId,
 }
 
-enum FilterWidgetAction {
-    None,
-    Next,
-    Prev,
-    Changed,
-}
-
 pub(super) enum CommitViewAction {
     RequestDiff(DiffRequest),
     None,
@@ -108,7 +101,7 @@ impl CommitView {
     }
 
     fn increment_offset_index(&mut self) {
-        if self.search_result_offset_index >= self.search_result_offsets.len() - 1 {
+        if self.search_result_offset_index >= self.search_result_offsets.len().saturating_sub(1) {
             self.search_result_offset_index = 0;
         } else {
             self.search_result_offset_index += 1;
@@ -152,22 +145,26 @@ impl CommitView {
             )
             .ui(ui);
 
-            match show_filter_widgets(ui, &mut self.search_text) {
-                FilterWidgetAction::Changed => {
+            let search_action = SearchBar::new(&mut self.search_text)
+                .desired_width(300.0)
+                .show(ui);
+
+            match search_action {
+                SearchAction::Changed => {
                     self.update_search_results();
                     if !self.search_text.is_empty() {
                         jump_to_selected_highlight = true;
                     }
                 }
-                FilterWidgetAction::Prev => {
+                SearchAction::Prev => {
                     self.decrement_offset_index();
                     jump_to_selected_highlight = true;
                 }
-                FilterWidgetAction::Next => {
+                SearchAction::Next => {
                     self.increment_offset_index();
                     jump_to_selected_highlight = true;
                 }
-                FilterWidgetAction::None => (),
+                SearchAction::None => (),
             }
         });
 
@@ -245,33 +242,6 @@ fn construct_diff_request(
         to: selected_commit.clone(),
         ignore_whitespace,
     })
-}
-
-fn show_filter_widgets(ui: &mut Ui, search_text: &mut String) -> FilterWidgetAction {
-    let text_response = TextEdit::singleline(search_text)
-        .hint_text("search")
-        .show(ui)
-        .response;
-
-    let prev_response = ui.button("prev");
-    let next_response = ui.button("next");
-
-    if text_response.changed() {
-        FilterWidgetAction::Changed
-    } else if text_response.lost_focus() && ui.input().key_pressed(eframe::egui::Key::Enter) {
-        text_response.request_focus();
-        if ui.input().modifiers.shift {
-            FilterWidgetAction::Prev
-        } else {
-            FilterWidgetAction::Next
-        }
-    } else if next_response.clicked() {
-        FilterWidgetAction::Next
-    } else if prev_response.clicked() {
-        FilterWidgetAction::Prev
-    } else {
-        FilterWidgetAction::None
-    }
 }
 
 fn gen_commit_header(

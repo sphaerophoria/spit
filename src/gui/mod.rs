@@ -19,7 +19,7 @@ use clipboard::{ClipboardContext, ClipboardProvider};
 use eframe::{
     egui::{
         self, text::LayoutJob, Align, Color32, Layout, Pos2, Rect, Response, RichText, Sense,
-        Stroke, TextFormat, TextStyle, Ui,
+        Stroke, TextEdit, TextFormat, TextStyle, Ui,
     },
     epi,
 };
@@ -392,6 +392,9 @@ fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> Option<PathBuf>
     ret
 }
 
+// Clippy wants this to be a reference but that doesn't allow egui to change the length of the
+// string etc.
+#[allow(clippy::ptr_arg)]
 fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String) -> bool {
     // UI management...
     // As far as I can tell, ScrollArea is going to take up the remaining spcace if I do not set
@@ -459,6 +462,69 @@ fn reference_color(id: &ReferenceId) -> Color32 {
 fn try_set_clipboard(clipboard: &mut ClipboardContext, s: String) {
     if let Err(e) = clipboard.set_contents(s) {
         error!("Failed to set clipboard contents: {}", e);
+    }
+}
+
+enum SearchAction {
+    Changed,
+    Next,
+    Prev,
+    None,
+}
+
+struct SearchBar<'a> {
+    search_text: &'a mut String,
+    width: Option<f32>,
+}
+
+impl<'a> SearchBar<'a> {
+    fn new(search_text: &mut String) -> SearchBar {
+        SearchBar {
+            search_text,
+            width: None,
+        }
+    }
+
+    fn desired_width(mut self, width: f32) -> SearchBar<'a> {
+        self.width = Some(width);
+        self
+    }
+
+    fn show(self, ui: &mut Ui) -> SearchAction {
+        let width = self.width.unwrap_or_else(|| ui.available_width());
+
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, ui.spacing().interact_size.y),
+            Layout::right_to_left(),
+            |ui| {
+                let next_response = ui.button("next");
+                let prev_response = ui.button("prev");
+
+                let text_response = TextEdit::singleline(self.search_text)
+                    .desired_width(ui.available_width())
+                    .hint_text("search")
+                    .show(ui)
+                    .response;
+
+                if text_response.lost_focus() && ui.input().key_pressed(eframe::egui::Key::Enter) {
+                    text_response.request_focus();
+                    if ui.input().modifiers.shift {
+                        SearchAction::Prev
+                    } else {
+                        SearchAction::Next
+                    }
+                } else if text_response.changed() {
+                    SearchAction::Changed
+                } else if next_response.clicked() {
+                    SearchAction::Next
+                } else if prev_response.clicked() {
+                    SearchAction::Prev
+                } else {
+                    SearchAction::None
+                }
+            },
+        )
+        .inner
     }
 }
 
