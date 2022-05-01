@@ -6,6 +6,7 @@ use std::{
 pub(crate) struct Cache<K, V> {
     data: HashMap<K, V>,
     order: VecDeque<K>,
+    pinned: Option<K>,
     size: usize,
 }
 
@@ -15,6 +16,7 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
         Cache {
             data: HashMap::new(),
             order: VecDeque::new(),
+            pinned: None,
             size,
         }
     }
@@ -36,15 +38,30 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
         }
 
         if self.order.len() > self.size {
-            let popped_key = self.order.pop_front().expect("No items in cache");
-            let popped_val = self
+            let mut popped_key = self.order.pop_front().expect("No items in cache");
+            let mut popped_val = self
                 .data
                 .remove(&popped_key)
                 .expect("Missing object in item cache");
+
+            if Some(&popped_key) == self.pinned.as_ref() {
+                self.order.push_back(popped_key.clone());
+                self.data.insert(popped_key, popped_val);
+                popped_key = self.order.pop_front().unwrap();
+                popped_val = self
+                    .data
+                    .remove(&popped_key)
+                    .expect("Missing object in item cache");
+            }
+
             Some((popped_key, popped_val))
         } else {
             None
         }
+    }
+
+    pub(crate) fn pin(&mut self, key: K) {
+        self.pinned = Some(key);
     }
 
     pub(crate) fn get(&self, key: &K) -> Option<&V> {
@@ -102,5 +119,20 @@ mod test {
         // Pushing a new value should replace 2 since it was inserted before the latest insertion
         // of 1
         assert_eq!(cache.push(3, 3), Some((2, 2)));
+    }
+
+    #[test]
+    fn test_pinning() {
+        let mut cache = Cache::new(2);
+        assert_eq!(cache.push(1, 1), None);
+        cache.pin(1);
+        assert_eq!(cache.push(2, 2), None);
+        assert_eq!(cache.push(3, 3), Some((2, 2)));
+        assert_eq!(cache.get(&1), Some(&1));
+        assert_eq!(cache.push(4, 4), Some((3, 3)));
+        assert_eq!(cache.get(&1), Some(&1));
+        cache.pin(4);
+        assert_eq!(cache.push(5, 5), Some((1, 1)));
+        assert_eq!(cache.get(&4), Some(&4));
     }
 }

@@ -117,7 +117,8 @@ impl GuiInner {
                 self.pending_view_state.update_with_repo_state(&repo_state);
                 self.view_state.update_with_repo_state(&repo_state);
                 self.sidebar.update_with_repo_state(Arc::clone(&repo_state));
-                self.commit_log.update_with_repo_state(Arc::clone(&repo_state));
+                self.commit_log
+                    .update_with_repo_state(Arc::clone(&repo_state));
                 if *self.repo_state != *repo_state {
                     self.repo_state = repo_state;
                     // Reset requested view state to force a re-request
@@ -210,6 +211,26 @@ impl GuiInner {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    fn ensure_selected_commit_in_cache(&mut self) -> Result<()> {
+        let selected_commit = match self.commit_log.selected_commit() {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        self.commit_cache.pin(selected_commit.clone());
+
+        if self.commit_cache.get(selected_commit).is_some() {
+            return Ok(());
+        }
+
+        let selected_commit = selected_commit.clone();
+        self.request_commit(selected_commit)
+            .context("Failed to request selected commit")?;
+
         Ok(())
     }
 
@@ -292,6 +313,7 @@ impl GuiInner {
             SidebarAction::None => (),
         }
 
+        self.ensure_selected_commit_in_cache()?;
         self.handle_commit_view_action(commit_view_action)?;
         self.handle_commit_log_actions(commit_log_actions)?;
         self.request_pending_view_state()?;
