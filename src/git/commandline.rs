@@ -35,6 +35,9 @@ pub(crate) fn delete(ref_id: &ReferenceId) -> Result<String> {
                 escaped_string(name)
             )
         }
+        ReferenceId::Tag(name) => {
+            format!("git tag -d {}", escaped_string(name))
+        }
         ReferenceId::Unknown => bail!("Cannot remove unknown ref"),
     };
     Ok(ret)

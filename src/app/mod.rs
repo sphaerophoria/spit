@@ -3,8 +3,8 @@ mod priority_queue;
 use crate::{
     app::priority_queue::PriorityQueue,
     git::{
-        self, build_git_history_graph, Branch, Commit, Diff, HistoryGraph, ObjectId, ReferenceId,
-        Repo, SortType,
+        self, build_git_history_graph, Commit, Diff, HistoryGraph, ObjectId, Reference,
+        ReferenceId, Repo, SortType,
     },
 };
 
@@ -26,7 +26,7 @@ use std::{
 pub struct RepoState {
     pub(crate) repo: PathBuf,
     pub(crate) head: ReferenceId,
-    pub(crate) branches: Vec<Branch>,
+    pub(crate) references: Vec<Reference>,
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -41,7 +41,7 @@ impl ViewState {
         let had_any_branches = !selected_references.is_empty();
         self.selected_references = selected_references
             .into_iter()
-            .filter(|selected| repo_state.branches.iter().any(|b| &b.id == selected))
+            .filter(|selected| repo_state.references.iter().any(|b| &b.id == selected))
             .collect();
 
         if self.selected_references.is_empty() && had_any_branches {
@@ -263,7 +263,7 @@ impl App {
                     let heads = view_state
                         .selected_references
                         .iter()
-                        .map(|id| repo.find_reference_object(id))
+                        .map(|id| repo.find_reference_commit_id(id))
                         .collect::<Result<Vec<_>>>()?;
 
                     let graph = build_git_history_graph(repo, &heads, view_state.sort_type)?;
@@ -295,18 +295,20 @@ impl App {
 }
 
 fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
-    let mut branches = vec![Ok(Branch {
-        head: repo.find_reference_object(&ReferenceId::head())?,
+    let mut branches = vec![Ok(Reference {
+        head: repo.find_reference_commit_id(&ReferenceId::head())?,
         id: ReferenceId::head(),
     })];
     branches.extend(repo.branches().context("Failed to retrieve branches")?);
-    let branches = branches.into_iter().collect::<Result<_>>()?;
+    let mut branches = branches.into_iter().collect::<Result<Vec<_>>>()?;
     let head = repo.resolve_reference(&ReferenceId::head())?;
+    let tags = repo.tags().context("Failed to retrieve tags")?;
+    branches.extend(tags);
 
     Ok(RepoState {
         repo: repo.repo_root().to_path_buf(),
         head,
-        branches,
+        references: branches,
     })
 }
 
@@ -387,12 +389,12 @@ mod test {
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
             head: ReferenceId::Unknown,
-            branches: vec![
-                Branch {
+            references: vec![
+                Reference {
                     id: ReferenceId::head(),
                     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
                 },
-                Branch {
+                Reference {
                     id: ReferenceId::RemoteBranch("Test".to_string()),
                     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
                 },
@@ -420,7 +422,7 @@ mod test {
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
             head: ReferenceId::Unknown,
-            branches: vec![Branch {
+            references: vec![Reference {
                 id: ReferenceId::head(),
                 head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
             }],
@@ -444,7 +446,7 @@ mod test {
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
             head: ReferenceId::Unknown,
-            branches: vec![Branch {
+            references: vec![Reference {
                 id: ReferenceId::head(),
                 head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
             }],

@@ -26,6 +26,7 @@ pub enum ReferenceId {
     Symbolic(String),
     LocalBranch(String),
     RemoteBranch(String),
+    Tag(String),
     Unknown,
 }
 
@@ -45,6 +46,7 @@ impl ReferenceId {
             ReferenceId::Symbolic(name) => name.clone(),
             ReferenceId::LocalBranch(name) => format!("refs/heads/{}", name),
             ReferenceId::RemoteBranch(name) => format!("refs/remotes/{}", name),
+            ReferenceId::Tag(name) => format!("refs/tags/{}", name),
             ReferenceId::Unknown => {
                 return Err(Error::msg("Cannot find object id of unknown reference"));
             }
@@ -59,7 +61,8 @@ impl fmt::Display for ReferenceId {
         match self {
             ReferenceId::Symbolic(name)
             | ReferenceId::RemoteBranch(name)
-            | ReferenceId::LocalBranch(name) => f.write_str(name)?,
+            | ReferenceId::LocalBranch(name)
+            | ReferenceId::Tag(name) => f.write_str(name)?,
             ReferenceId::Unknown => f.write_str("Unknown")?,
         }
 
@@ -108,7 +111,7 @@ impl<'a> TryFrom<&git2::Reference<'a>> for ReferenceId {
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, PartialOrd, Ord)]
-pub struct Branch {
+pub struct Reference {
     pub(crate) id: ReferenceId,
     pub(crate) head: ObjectId,
 }

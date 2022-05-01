@@ -464,6 +464,7 @@ fn reference_color(id: &ReferenceId) -> Color32 {
         ReferenceId::Symbolic(_) => Color32::LIGHT_BLUE,
         ReferenceId::LocalBranch(_) => Color32::LIGHT_GREEN,
         ReferenceId::RemoteBranch(_) => Color32::LIGHT_RED,
+        ReferenceId::Tag(_) => Color32::LIGHT_YELLOW,
         ReferenceId::Unknown => Color32::RED,
     }
 }

@@ -1,7 +1,7 @@
 use crate::{
     git::{
-        decompress, pack::Pack, Branch, Commit, CommitMetadata, Diff, DiffContent, DiffFileHeader,
-        DiffMetadata, ObjectId, ReferenceId,
+        decompress, pack::Pack, Commit, CommitMetadata, Diff, DiffContent, DiffFileHeader,
+        DiffMetadata, ObjectId, Reference, ReferenceId,
     },
     util::Timer,
 };
@@ -228,32 +228,62 @@ impl Repo {
         Ok((walked, child_indices))
     }
 
-    pub(crate) fn branches(&self) -> Result<impl Iterator<Item = Result<Branch>> + '_> {
-        Ok(self.git2_repo.branches(None)?.map(|b| -> Result<Branch> {
-            let (b, t) = b?;
-            let name = b
-                .name()?
-                .ok_or_else(|| Error::msg("Invalid branch name"))?
-                .to_string();
-            let id = match t {
-                git2::BranchType::Local => ReferenceId::LocalBranch(name),
-                git2::BranchType::Remote => ReferenceId::RemoteBranch(name),
-            };
-            Ok(Branch {
-                id,
-                head: git2_branch_object(b)?,
-            })
-        }))
+    pub(crate) fn branches(&self) -> Result<impl Iterator<Item = Result<Reference>> + '_> {
+        Ok(self
+            .git2_repo
+            .branches(None)?
+            .map(|b| -> Result<Reference> {
+                let (b, t) = b?;
+                let name = b
+                    .name()?
+                    .ok_or_else(|| Error::msg("Invalid branch name"))?
+                    .to_string();
+                let id = match t {
+                    git2::BranchType::Local => ReferenceId::LocalBranch(name),
+                    git2::BranchType::Remote => ReferenceId::RemoteBranch(name),
+                };
+                Ok(Reference {
+                    id,
+                    head: git2_branch_object(b)?,
+                })
+            }))
     }
 
-    pub(crate) fn find_reference_object(&self, id: &ReferenceId) -> Result<ObjectId> {
+    pub(crate) fn tags(&self) -> Result<Vec<Reference>> {
+        self.git2_repo
+            .tag_names(None)?
+            .iter()
+            .flatten()
+            .map(|t| -> Result<Reference> {
+                let tag_refname = format!("refs/tags/{}", t);
+                let reference = self
+                    .git2_repo
+                    .find_reference(&tag_refname)
+                    .with_context(|| {
+                        format!("Failed to resolve reference id for tag {}", tag_refname)
+                    })?;
+
+                let id = reference
+                    .peel_to_commit()
+                    .context("Failed to find commit for tag")?
+                    .id();
+
+                Ok(Reference {
+                    id: ReferenceId::Tag(t.to_string()),
+                    head: id.into(),
+                })
+            })
+            .collect::<Result<_>>()
+    }
+
+    pub(crate) fn find_reference_commit_id(&self, id: &ReferenceId) -> Result<ObjectId> {
         let ref_name = id.reference_string()?;
         Ok(self
             .git2_repo
             .find_reference(&ref_name)?
             .resolve()?
-            .target()
-            .ok_or_else(|| Error::msg("Failed to resolve reference"))?
+            .peel_to_commit()?
+            .id()
             .into())
     }
 
@@ -646,19 +676,19 @@ mod test {
         assert_eq!(
             branches,
             &[
-                Branch {
+                Reference {
                     id: ReferenceId::LocalBranch("master".to_string()),
                     head: "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?
                 },
-                Branch {
+                Reference {
                     id: ReferenceId::LocalBranch("test_branch".to_string()),
                     head: "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?
                 },
-                Branch {
+                Reference {
                     id: ReferenceId::RemoteBranch("origin/master".to_string()),
                     head: "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?
                 },
-                Branch {
+                Reference {
                     id: ReferenceId::RemoteBranch("origin/test_branch".to_string()),
                     head: "760e2389d32e245213eaf71d88e314fa63709c79".parse()?
                 },
@@ -701,14 +731,15 @@ mod test {
 
         let repo = Repo::new(git_dir.path().to_path_buf())?;
 
-        let head = repo.find_reference_object(&ReferenceId::LocalBranch("test_branch".into()))?;
+        let head =
+            repo.find_reference_commit_id(&ReferenceId::LocalBranch("test_branch".into()))?;
         assert_eq!(head, "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?);
 
-        let head = repo.find_reference_object(&ReferenceId::head())?;
+        let head = repo.find_reference_commit_id(&ReferenceId::head())?;
         assert_eq!(head, "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?);
 
         let head =
-            repo.find_reference_object(&ReferenceId::RemoteBranch("origin/master".into()))?;
+            repo.find_reference_commit_id(&ReferenceId::RemoteBranch("origin/master".into()))?;
         assert_eq!(head, "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?);
         Ok(())
     }
@@ -734,7 +765,7 @@ mod test {
             .args(&["commit", "-m", "testing", "--allow-empty"])
             .output()?;
 
-        let object_id = repo.find_reference_object(&ReferenceId::head())?;
+        let object_id = repo.find_reference_commit_id(&ReferenceId::head())?;
         let new_head = repo
             .metadata_iter(&[object_id], SortType::CommitterTimestamp)?
             .next()
