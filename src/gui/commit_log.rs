@@ -10,8 +10,8 @@ use crate::{
 
 use clipboard::ClipboardContext;
 use eframe::egui::{
-    text::LayoutJob, Label, Layout, Pos2, Rect, Response, ScrollArea, Sense, Stroke, TextFormat,
-    TextStyle, Ui, Vec2,
+    text::LayoutJob, Button, Label, Layout, Pos2, Rect, Response, ScrollArea, Sense, Stroke,
+    TextFormat, TextStyle, Ui, Vec2, Widget,
 };
 
 use std::{collections::HashMap, ops::Range, sync::Arc};
@@ -137,6 +137,10 @@ fn build_branch_id_lookup(state: &RepoState) -> HashMap<ObjectId, Vec<ReferenceI
         entry.push(branch.id.clone());
     }
     ret
+}
+
+fn add_no_wrap_button(ui: &mut Ui, label: &str) -> Response {
+    Button::new(label).wrap(false).ui(ui)
 }
 
 pub(super) enum CommitLogAction {
@@ -282,13 +286,13 @@ impl CommitLog {
                     }
 
                     commit_message_response.context_menu(|ui| {
-                        if ui.button("Copy hash").clicked() {
+                        if add_no_wrap_button(ui, "Copy hash").clicked() {
                             try_set_clipboard(clipboard, node.id.to_string());
                             ui.close_menu();
                         }
 
                         for ref_id in &node_branches {
-                            if ui.button(&format!("Copy {}", ref_id)).clicked() {
+                            if add_no_wrap_button(ui, &format!("Copy {}", ref_id)).clicked() {
                                 try_set_clipboard(clipboard, ref_id.to_string());
                                 ui.close_menu();
                             }
@@ -296,13 +300,13 @@ impl CommitLog {
 
                         ui.separator();
 
-                        if ui.button("Checkout hash").clicked() {
+                        if add_no_wrap_button(ui, "Checkout hash").clicked() {
                             actions.push(CommitLogAction::CheckoutObject(node.id.clone()));
                             ui.close_menu();
                         }
 
                         for &ref_id in &node_branches {
-                            if ui.button(&format!("Checkout {}", ref_id)).clicked() {
+                            if add_no_wrap_button(ui, &format!("Checkout {}", ref_id)).clicked() {
                                 actions.push(CommitLogAction::CheckoutReference(ref_id.clone()));
                                 ui.close_menu();
                             }
@@ -310,7 +314,7 @@ impl CommitLog {
 
                         ui.separator();
 
-                        if ui.button("Cherry pick").clicked() {
+                        if add_no_wrap_button(ui, "Cherry pick").clicked() {
                             actions.push(CommitLogAction::CherryPick(node.id.clone()));
                             ui.close_menu();
                         }
@@ -318,7 +322,7 @@ impl CommitLog {
                         ui.separator();
 
                         for &ref_id in &node_branches {
-                            if ui.button(&format!("Delete {}", ref_id)).clicked() {
+                            if add_no_wrap_button(ui, &format!("Delete {}", ref_id)).clicked() {
                                 actions.push(CommitLogAction::DeleteReference(ref_id.clone()));
                                 ui.close_menu();
                             }
