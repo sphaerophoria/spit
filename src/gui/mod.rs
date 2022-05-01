@@ -414,7 +414,7 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
     // automatically track remaining space
     // * Layout forwards from within the backwards layout to get the scroll area to work right
     ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-        let response = egui::TextEdit::multiline(git_command)
+        let response = egui::TextEdit::singleline(git_command)
             .id_source("git_command")
             .desired_rows(1)
             .desired_width(ui.available_width())
@@ -434,7 +434,11 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
                 });
         });
 
-        response.has_focus() && ui.input().key_pressed(egui::Key::Enter)
+        let enter_pressed = response.lost_focus() && ui.input().key_pressed(egui::Key::Enter);
+        if enter_pressed {
+            response.request_focus();
+        }
+        enter_pressed
     })
     .inner
 }
