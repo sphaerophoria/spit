@@ -8,6 +8,7 @@ use crate::{
 
 use anyhow::{Context, Error, Result};
 use flate2::Decompress;
+use git2::RepositoryOpenFlags;
 use log::{debug, error};
 
 use std::{
@@ -45,8 +46,13 @@ pub(crate) struct Repo {
 impl Repo {
     pub(crate) fn new(repo_root: PathBuf) -> Result<Repo> {
         let decompressor = Decompress::new(true);
-        let git2_repo =
-            git2::Repository::open(repo_root.clone()).context("Failed to open git2 repo")?;
+        let ceiling_dirs: &[&Path] = &[];
+        let git2_repo = git2::Repository::open_ext(
+            repo_root.clone(),
+            RepositoryOpenFlags::empty(),
+            ceiling_dirs,
+        )
+        .context("Failed to open git2 repo")?;
 
         let git_dir = git2_repo.path().to_path_buf();
         let packs = find_packs(&git_dir)?;
