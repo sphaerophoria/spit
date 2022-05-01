@@ -145,10 +145,20 @@ impl App {
         bash_cmd.push(cmd);
         bash_cmd.push(" 2>&1");
 
-        let output = Command::new("/bin/bash")
-            .arg("-c")
-            .arg(bash_cmd)
-            .current_dir(repo_root)
+        let editor = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|x| x.to_path_buf()))
+            .map(|p| p.join("spit-editor"));
+
+        let mut command = Command::new("/bin/bash");
+
+        command.arg("-c").arg(bash_cmd).current_dir(repo_root);
+
+        if let Some(editor) = editor {
+            command.env("EDITOR", editor);
+        }
+
+        let output = command
             .output()
             .with_context(|| format!("Failed to run {}", cmd))?;
 

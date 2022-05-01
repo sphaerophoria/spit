@@ -1,7 +1,10 @@
 mod commit_log;
 mod commit_view;
+mod editor;
 mod sidebar;
 mod tristate_checkbox;
+
+pub use editor::Editor;
 
 use commit_log::CommitLog;
 use commit_view::{CommitView, CommitViewAction};
