@@ -9,6 +9,9 @@ fn main() -> Result<()> {
         None => std::process::exit(1),
     };
 
-    let gui = Editor::new(&filename)?;
-    eframe::run_native(Box::new(gui), Default::default());
+    eframe::run_native(
+        "Spit editor",
+        Default::default(),
+        Box::new(move |cc| Box::new(Editor::new(&filename, cc).unwrap())),
+    );
 }

@@ -12,7 +12,7 @@ use eframe::{
         text::LayoutJob, Align, CollapsingHeader, Color32, Galley, ScrollArea, TextEdit,
         TextFormat, TextStyle, Ui, Widget,
     },
-    epaint::text::cursor::CCursor,
+    epaint::text::{cursor::CCursor, TextWrapping},
 };
 
 use std::{fmt::Write, sync::Arc};
@@ -279,8 +279,12 @@ fn diff_view_layouter(
     // NOTE: no caching here, I think our layout is cheap enough that it doesn't
     // matter, but we have to keep an eye on it
 
+    let wrap = TextWrapping {
+        max_width: wrap_width,
+        ..Default::default()
+    };
     let mut job = LayoutJob {
-        wrap_width,
+        wrap,
         ..Default::default()
     };
 

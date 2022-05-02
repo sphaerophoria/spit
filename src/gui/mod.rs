@@ -20,7 +20,7 @@ use anyhow::{Context, Error, Result};
 use clipboard::{ClipboardContext, ClipboardProvider};
 use eframe::{
     egui::{self, Align, Color32, Layout, RichText, TextEdit, TextStyle, Ui},
-    epi,
+    App, CreationContext,
 };
 use log::{debug, error, warn};
 
@@ -326,47 +326,40 @@ impl GuiInner {
 }
 
 pub struct Gui {
-    rx: Option<Receiver<AppEvent>>,
     inner: Arc<Mutex<GuiInner>>,
 }
 
 impl Gui {
-    pub fn new(tx: Sender<AppRequest>, rx: Receiver<AppEvent>) -> Result<Gui> {
-        let inner = GuiInner::new(tx)?;
-        Ok(Gui {
-            rx: Some(rx),
-            inner: Arc::new(Mutex::new(inner)),
-        })
-    }
-}
+    pub fn new(
+        tx: Sender<AppRequest>,
+        rx: Receiver<AppEvent>,
+        cc: &CreationContext<'_>,
+    ) -> Result<Gui> {
+        let inner = Arc::new(Mutex::new(GuiInner::new(tx)?));
 
-impl epi::App for Gui {
-    fn name(&self) -> &str {
-        "Spit"
-    }
+        let ctx = &cc.egui_ctx;
 
-    fn setup(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &epi::Frame,
-        _storage: Option<&dyn epi::Storage>,
-    ) {
         // Colors are unreadable in light mode, force dark mode for now
         ctx.set_visuals(egui::Visuals::dark());
         // We need to spawn a thread to process events
-        let inner = Arc::clone(&self.inner);
-        let frame = frame.clone();
-        let rx = std::mem::take(&mut self.rx).expect("Setup called with uninitialized rx");
-        std::thread::spawn(move || {
-            while let Ok(response) = rx.recv() {
-                let mut inner = inner.lock().unwrap();
-                inner.handle_event(response);
-                frame.request_repaint();
+        std::thread::spawn({
+            let inner = Arc::clone(&inner);
+            let ctx = ctx.clone();
+            move || {
+                while let Ok(response) = rx.recv() {
+                    let mut inner = inner.lock().unwrap();
+                    inner.handle_event(response);
+                    ctx.request_repaint();
+                }
             }
         });
-    }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &epi::Frame) {
+        Ok(Gui { inner })
+    }
+}
+
+impl App for Gui {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut inner = self.inner.lock().unwrap();
         let res = inner.update(ctx);
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use eframe::{
     egui::{self, CentralPanel, Layout, TextEdit, TextStyle, TopBottomPanel, Visuals},
-    epi::{self, App},
+    App, CreationContext,
 };
 
 use log::error;
@@ -19,10 +19,12 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(filename: &str) -> Result<Editor> {
+    pub fn new(filename: &str, cc: &CreationContext<'_>) -> Result<Editor> {
         let filename: PathBuf = filename.try_into()?;
         let content = load_content(&filename)?;
         let should_save = false;
+
+        cc.egui_ctx.set_visuals(Visuals::dark());
 
         Ok(Editor {
             filename,
@@ -33,21 +35,7 @@ impl Editor {
 }
 
 impl App for Editor {
-    fn name(&self) -> &str {
-        "Spit Editor"
-    }
-
-    fn setup(
-        &mut self,
-        ctx: &egui::Context,
-        _frame: &epi::Frame,
-        _storage: Option<&dyn epi::Storage>,
-    ) {
-        // Colors are unreadable in light mode, force dark mode for now
-        ctx.set_visuals(Visuals::dark());
-    }
-
-    fn update(&mut self, ctx: &egui::Context, frame: &epi::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let mut reload = false;
 
         TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -93,7 +81,7 @@ impl App for Editor {
         }
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: &eframe::glow::Context) {
         if self.should_save {
             let mut f = match OpenOptions::new()
                 .write(true)
