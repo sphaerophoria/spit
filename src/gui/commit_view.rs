@@ -9,13 +9,13 @@ use log::error;
 
 use eframe::{
     egui::{
-        text::LayoutJob, Align, CollapsingHeader, Color32, Galley, ScrollArea, TextEdit,
-        TextFormat, TextStyle, Ui, Widget,
+        text::LayoutJob, Align, CollapsingHeader, Color32, ScrollArea, TextEdit, TextFormat,
+        TextStyle, Ui, Widget,
     },
     epaint::text::{cursor::CCursor, TextWrapping},
 };
 
-use std::{fmt::Write, sync::Arc};
+use std::{fmt::Write, hash::Hash};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ProcessedDiffOffset {
@@ -59,14 +59,31 @@ pub(super) enum CommitViewAction {
     None,
 }
 
-#[derive(Default)]
 pub(super) struct CommitView {
     diff_ignore_whitespace: bool,
     last_requested_diff: Option<DiffRequest>,
     current_diff: Option<ProcessedDiff>,
+    // NOTE: We only store the hash of the string to avoid storing the diff string multiple times.
+    // Technically there's a chance of hash collision here, but given that we are only caching a
+    // single layout job I'd like to see a hash collision before doing something better
+    layout_cache: Cache<u64, LayoutJob>,
     search_text: String,
     search_result_offsets: Vec<ProcessedDiffOffset>,
     search_result_offset_index: usize,
+}
+
+impl Default for CommitView {
+    fn default() -> CommitView {
+        CommitView {
+            diff_ignore_whitespace: Default::default(),
+            last_requested_diff: Default::default(),
+            current_diff: Default::default(),
+            layout_cache: Cache::new(1),
+            search_text: Default::default(),
+            search_result_offsets: Default::default(),
+            search_result_offset_index: Default::default(),
+        }
+    }
 }
 
 impl CommitView {
@@ -80,8 +97,9 @@ impl CommitView {
     }
 
     pub(super) fn update_diff(&mut self, diff: Diff) {
-        match TryFrom::try_from(diff) {
+        match ProcessedDiff::try_from(diff) {
             Ok(d) => {
+                self.layout_cache.set_size(d.file_diff_strings.len());
                 self.current_diff = Some(d);
                 self.update_search_results();
             }
@@ -192,6 +210,7 @@ impl CommitView {
                     if &diff.metadata.to == selected_commit {
                         add_diff_hunks_to_ui(
                             ui,
+                            &mut self.layout_cache,
                             diff,
                             force_expanded_state,
                             self.search_text.len(),
@@ -268,16 +287,42 @@ fn gen_commit_header(
         .unwrap_or_else(String::new)
 }
 
+fn extract_line_highlight_positions(
+    line_pos: usize,
+    line_len: usize,
+    highlight_positions: &mut Vec<usize>,
+) -> Vec<usize> {
+    let mut line_highlight_positions = Vec::new();
+    let mut to_pop = 0;
+    for pos in highlight_positions.iter().rev() {
+        if line_pos + line_len < *pos {
+            break;
+        }
+        line_highlight_positions.push(*pos);
+        to_pop += 1;
+    }
+
+    for _ in 0..to_pop {
+        highlight_positions.pop();
+    }
+
+    line_highlight_positions
+}
+
 fn diff_view_layouter(
     ui: &Ui,
+    cache: &mut Cache<u64, LayoutJob>,
     s: &str,
     wrap_width: f32,
     selected_highlight_pos: Option<usize>,
     mut highlight_positions: Vec<usize>,
     highlight_len: usize,
-) -> Arc<Galley> {
-    // NOTE: no caching here, I think our layout is cheap enough that it doesn't
-    // matter, but we have to keep an eye on it
+) -> LayoutJob {
+    let hash = eframe::egui::util::hash(s);
+
+    if let Some(job) = cache.get(&hash) {
+        return job.clone();
+    }
 
     let wrap = TextWrapping {
         max_width: wrap_width,
@@ -288,15 +333,14 @@ fn diff_view_layouter(
         ..Default::default()
     };
 
+    highlight_positions.sort_by(|a, b| b.cmp(a));
+
     let default_color = ui.visuals().text_color();
     let font = ui.style().text_styles[&TextStyle::Monospace].clone();
     let mut processed_chars = 0;
     for line in s.split_inclusive('\n') {
-        let (line_highlight_positions, remaining_highlight_positions) =
-            std::mem::take(&mut highlight_positions)
-                .into_iter()
-                .partition(|&v| v < processed_chars + line.len());
-        highlight_positions = remaining_highlight_positions;
+        let line_highlight_positions =
+            extract_line_highlight_positions(processed_chars, line.len(), &mut highlight_positions);
 
         let line_color = match line.as_bytes()[0] {
             b'+' => Color32::LIGHT_GREEN,
@@ -345,11 +389,16 @@ fn diff_view_layouter(
 
         processed_chars += line.len();
     }
-    ui.fonts().layout_job(job)
+
+    cache.push(hash, job.clone());
+
+    job
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_diff_hunks_to_ui(
     ui: &mut Ui,
+    layout_cache: &mut Cache<u64, LayoutJob>,
     diff: &ProcessedDiff,
     force_state: Option<bool>,
     highlight_len: usize,
@@ -411,14 +460,16 @@ fn add_diff_hunks_to_ui(
                     .font(TextStyle::Monospace)
                     .desired_width(ui.available_width())
                     .layouter(&mut |ui, s, wrap_width| {
-                        diff_view_layouter(
+                        let job = diff_view_layouter(
                             ui,
+                            layout_cache,
                             s,
                             wrap_width,
                             file_selected_highlight_pos,
                             this_highlight_positions.clone(),
                             highlight_len,
-                        )
+                        );
+                        ui.fonts().layout_job(job)
                     })
                     .show(ui);
 
@@ -539,5 +590,40 @@ mod test {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_extract_line_highlight_positions() {
+        let mut highlight_positions = vec![132, 43, 10, 9, 1];
+
+        let line_highlight_positions =
+            extract_line_highlight_positions(0, 2, &mut highlight_positions);
+
+        assert_eq!(&line_highlight_positions, &[1]);
+        assert_eq!(&highlight_positions, &[132, 43, 10, 9]);
+
+        let line_highlight_positions =
+            extract_line_highlight_positions(2, 10, &mut highlight_positions);
+
+        assert_eq!(&line_highlight_positions, &[9, 10]);
+        assert_eq!(&highlight_positions, &[132, 43]);
+
+        let line_highlight_positions =
+            extract_line_highlight_positions(12, 10, &mut highlight_positions);
+
+        assert_eq!(&line_highlight_positions, &[]);
+        assert_eq!(&highlight_positions, &[132, 43]);
+
+        let line_highlight_positions =
+            extract_line_highlight_positions(43, 100, &mut highlight_positions);
+
+        assert_eq!(&line_highlight_positions, &[43, 132]);
+        assert_eq!(&highlight_positions, &[]);
+
+        let line_highlight_positions =
+            extract_line_highlight_positions(43, 100, &mut highlight_positions);
+
+        assert_eq!(&line_highlight_positions, &[]);
+        assert_eq!(&highlight_positions, &[]);
     }
 }

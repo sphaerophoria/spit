@@ -38,25 +38,16 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
         }
 
         if self.order.len() > self.size {
-            let mut popped_key = self.order.pop_front().expect("No items in cache");
-            let mut popped_val = self
-                .data
-                .remove(&popped_key)
-                .expect("Missing object in item cache");
-
-            if Some(&popped_key) == self.pinned.as_ref() {
-                self.order.push_back(popped_key.clone());
-                self.data.insert(popped_key, popped_val);
-                popped_key = self.order.pop_front().unwrap();
-                popped_val = self
-                    .data
-                    .remove(&popped_key)
-                    .expect("Missing object in item cache");
-            }
-
-            Some((popped_key, popped_val))
+            self.pop_elem()
         } else {
             None
+        }
+    }
+
+    pub(crate) fn set_size(&mut self, size: usize) {
+        self.size = size;
+        while self.order.len() > self.size {
+            self.pop_elem();
         }
     }
 
@@ -66,6 +57,26 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
 
     pub(crate) fn get(&self, key: &K) -> Option<&V> {
         self.data.get(key)
+    }
+
+    fn pop_elem(&mut self) -> Option<(K, V)> {
+        let mut popped_key = self.order.pop_front().expect("No items in cache");
+        let mut popped_val = self
+            .data
+            .remove(&popped_key)
+            .expect("Missing object in item cache");
+
+        if Some(&popped_key) == self.pinned.as_ref() {
+            self.order.push_back(popped_key.clone());
+            self.data.insert(popped_key, popped_val);
+            popped_key = self.order.pop_front().unwrap();
+            popped_val = self
+                .data
+                .remove(&popped_key)
+                .expect("Missing object in item cache");
+        }
+
+        Some((popped_key, popped_val))
     }
 }
 
@@ -134,5 +145,49 @@ mod test {
         cache.pin(4);
         assert_eq!(cache.push(5, 5), Some((1, 1)));
         assert_eq!(cache.get(&4), Some(&4));
+    }
+
+    #[test]
+    fn test_growing() {
+        let mut cache = Cache::new(2);
+        assert_eq!(cache.push(1, 1), None);
+        assert_eq!(cache.push(2, 2), None);
+
+        assert_eq!(cache.push(3, 3), Some((1, 1)));
+        assert_eq!(cache.get(&1), None);
+
+        cache.set_size(3);
+
+        assert_eq!(cache.get(&2), Some(&2));
+        assert_eq!(cache.get(&3), Some(&3));
+        assert_eq!(cache.push(4, 4), None);
+        assert_eq!(cache.get(&2), Some(&2));
+        assert_eq!(cache.get(&3), Some(&3));
+        assert_eq!(cache.get(&4), Some(&4));
+    }
+
+    #[test]
+    fn test_shrinking() {
+        let mut cache = Cache::new(5);
+        assert_eq!(cache.push(1, 1), None);
+        assert_eq!(cache.push(2, 2), None);
+        assert_eq!(cache.push(3, 3), None);
+        assert_eq!(cache.push(4, 4), None);
+        assert_eq!(cache.push(5, 5), None);
+
+        assert_eq!(cache.get(&1), Some(&1));
+        assert_eq!(cache.get(&2), Some(&2));
+        assert_eq!(cache.get(&3), Some(&3));
+        assert_eq!(cache.get(&4), Some(&4));
+        assert_eq!(cache.get(&5), Some(&5));
+
+        cache.pin(2);
+        cache.set_size(3);
+
+        assert_eq!(cache.get(&1), None);
+        assert_eq!(cache.get(&2), Some(&2));
+        assert_eq!(cache.get(&3), None);
+        assert_eq!(cache.get(&4), Some(&4));
+        assert_eq!(cache.get(&5), Some(&5));
     }
 }
