@@ -254,7 +254,7 @@ impl Repo {
             .tag_names(None)?
             .iter()
             .flatten()
-            .map(|t| -> Result<Reference> {
+            .map(|t| -> Result<Option<Reference>> {
                 let tag_refname = format!("refs/tags/{}", t);
                 let reference = self
                     .git2_repo
@@ -263,16 +263,22 @@ impl Repo {
                         format!("Failed to resolve reference id for tag {}", tag_refname)
                     })?;
 
-                let id = reference
-                    .peel_to_commit()
-                    .context("Failed to find commit for tag")?
-                    .id();
+                let id = match reference.peel_to_commit() {
+                    Ok(v) => v.id(),
+                    Err(_e) => {
+                        // It's possible for a tag to point directly to a tree (e.g. in the linux
+                        // kernel). In this case we do not flag it as an error, but we do not show
+                        // it because it doesn't fit our type well
+                        return Ok(None);
+                    }
+                };
 
-                Ok(Reference {
+                Ok(Some(Reference {
                     id: ReferenceId::Tag(t.to_string()),
                     head: id.into(),
-                })
+                }))
             })
+            .filter_map(|t| t.transpose())
             .collect::<Result<_>>()
     }
 
