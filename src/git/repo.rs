@@ -18,6 +18,28 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) struct MetadataIter<T> {
+    iter: T,
+    head_found: bool,
+}
+
+impl<T> MetadataIter<T> {
+    pub(crate) fn has_head(&self) -> bool {
+        self.head_found
+    }
+}
+
+impl<T> Iterator for MetadataIter<T>
+where
+    T: Iterator,
+{
+    type Item = T::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum SortType {
     AuthorTimestamp,
@@ -157,24 +179,33 @@ impl Repo {
     /// before a parent. In this case the parent will appear after
     pub(crate) fn metadata_iter(
         &mut self,
+        head: ObjectId,
         heads: &[ObjectId],
         sort_type: SortType,
-    ) -> Result<impl Iterator<Item = &CommitMetadata>> {
+    ) -> Result<MetadataIter<impl Iterator<Item = &CommitMetadata>>> {
         // FIXME: Fall back on libgit2 on failure
 
         let (walked_indices, child_indices) = self.build_reverse_dag(heads)?;
+
+        let head_found = if let Some(head_idx) = self.metadata_lookup.get(&head) {
+            walked_indices.contains(head_idx)
+        } else {
+            false
+        };
 
         // NOTE: From this point on it's guaranteed that all parents of heads are in our
         // metadata_storage, so from this point on it's safe for us to use the metadata storage
         // directly
 
-        build_sorted_metadata_indicies(
+        let iter = build_sorted_metadata_indicies(
             sort_type,
             &walked_indices,
             child_indices,
             &self.metadata_lookup,
             &self.metadata_storage,
-        )
+        )?;
+
+        Ok(MetadataIter { iter, head_found })
     }
 
     /// Build the reversed dag for the given heads. The output is a Vec of Vecs that represents the
@@ -250,7 +281,8 @@ impl Repo {
     }
 
     pub(crate) fn tags(&self) -> Result<Vec<Reference>> {
-        self.git2_repo
+        Ok(self
+            .git2_repo
             .tag_names(None)?
             .iter()
             .flatten()
@@ -279,7 +311,8 @@ impl Repo {
                 }))
             })
             .filter_map(|t| t.transpose())
-            .collect::<Result<_>>()
+            .filter_map(|r| r.ok())
+            .collect())
     }
 
     pub(crate) fn find_reference_commit_id(&self, id: &ReferenceId) -> Result<ObjectId> {

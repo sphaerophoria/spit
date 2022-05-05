@@ -326,13 +326,34 @@ impl CommitLog {
                     ),
                 ));
 
+                let font = text_ui.style().text_styles[&TextStyle::Body].clone();
+                let text_color = text_ui.style().visuals.text_color();
+                // FIXME: Only render if row_range contains 0
+                if row_range.start == 0 {
+                    let stroke = ui.style().visuals.widgets.open.fg_stroke;
+                    let node_pos = Pos2 {
+                        x: converter.graph_x_to_ui_x(0),
+                        y: converter.graph_y_to_ui_y(0),
+                    };
+                    ui.painter().circle_stroke(node_pos, 3.0, stroke);
+                    render_commit_message(
+                        &mut text_ui,
+                        LayoutJob::single_section(
+                            "INDEX".to_string(),
+                            TextFormat::simple(font.clone(), text_color),
+                        ),
+                        false,
+                    );
+                }
+
+                let adjusted_row_range =
+                    row_range.start.saturating_sub(1)..row_range.end.saturating_sub(1);
+
                 let branch_id_lookup = build_branch_id_lookup(&self.repo_state);
-                for node in &commit_graph.nodes[row_range] {
+                for node in &commit_graph.nodes[adjusted_row_range] {
                     render_commit_node(ui, &node.position, &converter);
 
                     let mut job = LayoutJob::default();
-                    let style = text_ui.style();
-                    let font = style.text_styles[&TextStyle::Body].clone();
                     let mut node_branches = Vec::new();
 
                     if let Some(ids) = branch_id_lookup.get(&node.id) {
@@ -348,11 +369,7 @@ impl CommitLog {
                             }
 
                             job.append(&name, 0.0, textformat);
-                            job.append(
-                                " ",
-                                0.0,
-                                TextFormat::simple(font.clone(), style.visuals.text_color()),
-                            );
+                            job.append(" ", 0.0, TextFormat::simple(font.clone(), text_color));
                         }
                     }
 
@@ -369,11 +386,7 @@ impl CommitLog {
                         }
                     };
 
-                    job.append(
-                        &message,
-                        0.0,
-                        TextFormat::simple(font, style.visuals.text_color()),
-                    );
+                    job.append(&message, 0.0, TextFormat::simple(font.clone(), text_color));
 
                     let selected = self.selected_commit.as_ref() == Some(&node.id);
                     let commit_message_response =

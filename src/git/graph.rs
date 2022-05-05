@@ -46,11 +46,35 @@ struct GraphBuilder {
     nodes: Vec<CommitNode>,
     edges: Vec<Edge>,
     tails: Vec<TailData>,
+    y_offset: i32,
 }
 
 impl GraphBuilder {
+    fn new(head_id: Option<ObjectId>) -> GraphBuilder {
+        let (tails, y_offset) = if let Some(head_id) = head_id {
+            let tails = vec![TailData {
+                oid: head_id,
+                edge_start_y: 0,
+            }];
+
+            (tails, 1)
+        } else {
+            // Even if the head wasn't found we still start the list one item down so that we can
+            // still render the index above
+            (Vec::new(), 1)
+        };
+
+        GraphBuilder {
+            nodes: Default::default(),
+            edges: Default::default(),
+            tails,
+            y_offset,
+        }
+    }
+
     fn process_commit(&mut self, commit: &CommitMetadata) -> Result<()> {
-        let commit_y_pos = self.nodes.len().try_into().context("Too many commits")?;
+        let commit_y_pos: i32 = self.nodes.len().try_into().context("Too many commits")?;
+        let commit_y_pos = commit_y_pos + self.y_offset;
         let commit_tail_idx = ensure_commit_in_vec(commit, &mut self.tails, commit_y_pos);
         let parent_ids = &commit.parents;
 
@@ -124,7 +148,8 @@ fn add_commit_to_node_list(
     let y = node_list
         .last()
         .map(|node| node.position.y + 1)
-        .unwrap_or(0);
+        // FIXME: hardcode stupid
+        .unwrap_or(1);
     let position = GraphPoint { x, y };
     let id = commit.id.clone();
     node_list.push(CommitNode { position, id });
@@ -249,12 +274,17 @@ fn finish_edges(tails: &[TailData], end_y: i32, edges: &mut Vec<Edge>) -> Result
 
 pub(crate) fn build_git_history_graph(
     repo: &mut Repo,
+    // FIXME: name conflicts
+    head: ObjectId,
     heads: &[ObjectId],
     sort_type: SortType,
 ) -> Result<HistoryGraph> {
-    let mut graph_builder = GraphBuilder::default();
-
-    let revwalk = repo.metadata_iter(heads, sort_type)?;
+    let revwalk = repo.metadata_iter(head.clone(), heads, sort_type)?;
+    let mut graph_builder = if revwalk.has_head() {
+        GraphBuilder::new(Some(head))
+    } else {
+        GraphBuilder::new(None)
+    };
     for metadata in revwalk {
         graph_builder
             .process_commit(metadata)

@@ -328,9 +328,14 @@ impl App {
                         .selected_references
                         .iter()
                         .map(|id| repo.find_reference_commit_id(id))
-                        .collect::<Result<Vec<_>>>()?;
+                        .collect::<Result<Vec<_>>>()
+                        .context("Failed to lookup heads")?;
 
-                    let graph = build_git_history_graph(repo, &heads, view_state.sort_type)?;
+                    let head = repo
+                        .find_reference_commit_id(&ReferenceId::head())
+                        .context("Failed to find head commit id")?;
+                    let graph = build_git_history_graph(repo, head, &heads, view_state.sort_type)
+                        .context("Failed to build history graph")?;
 
                     self.tx
                         .send(AppEvent::CommitGraphFetched(view_state, graph))
