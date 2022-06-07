@@ -4,6 +4,7 @@ pub(crate) mod graph;
 mod object_id;
 mod pack;
 mod repo;
+pub mod repo_writer;
 
 pub(crate) use graph::{build_git_history_graph, HistoryGraph};
 pub(crate) use object_id::ObjectId;

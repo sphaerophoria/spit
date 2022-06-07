@@ -611,19 +611,19 @@ mod test {
         let line_highlight_positions =
             extract_line_highlight_positions(12, 10, &mut highlight_positions);
 
-        assert_eq!(&line_highlight_positions, &[]);
+        assert_eq!(line_highlight_positions.len(), 0);
         assert_eq!(&highlight_positions, &[132, 43]);
 
         let line_highlight_positions =
             extract_line_highlight_positions(43, 100, &mut highlight_positions);
 
         assert_eq!(&line_highlight_positions, &[43, 132]);
-        assert_eq!(&highlight_positions, &[]);
+        assert_eq!(highlight_positions.len(), 0);
 
         let line_highlight_positions =
             extract_line_highlight_positions(43, 100, &mut highlight_positions);
 
-        assert_eq!(&line_highlight_positions, &[]);
-        assert_eq!(&highlight_positions, &[]);
+        assert_eq!(line_highlight_positions.len(), 0);
+        assert_eq!(highlight_positions.len(), 0);
     }
 }

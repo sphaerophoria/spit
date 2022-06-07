@@ -1,0 +1,44 @@
+{
+  "branches": {
+    "master": "second_commit"
+  },
+  "unpacked": {
+    "my_blob": {
+      "object_type": "Blob",
+      "data": "My test blob"
+    },
+    "my_tree": {
+      "object_type": "Tree",
+      "items": [
+        {
+          "blob_id": "my_blob",
+          "name": "tmp.txt"
+        }
+      ]
+    },
+    "base_commit": {
+      "object_type": "Commit",
+      "tree": "my_tree",
+      "author": "Mick Sayson <mick@sayson.com>",
+      "author_timestamp": 1654754822,
+      "author_timezone": -700,
+      "committer": "Mick Sayson <mick@sayson.com>",
+      "committer_timestamp": 1654754822,
+      "committer_timezone": -700,
+      "message": "Base commit"
+    },
+    "second_commit": {
+      "object_type": "Commit",
+      "tree": "my_tree",
+      "author": "Mick Sayson <mick@sayson.com>",
+      "author_timestamp": 1654754823,
+      "author_timezone": -700,
+      "committer": "Mick Sayson <mick@sayson.com>",
+      "committer_timestamp": 1654754823,
+      "committer_timezone": -700,
+      "message": "Second commit",
+      "parent": "base_commit"
+    }
+  },
+  "packed": []
+}
