@@ -19,7 +19,7 @@ use crate::{
 use anyhow::{Context, Error, Result};
 use clipboard::{ClipboardContext, ClipboardProvider};
 use eframe::{
-    egui::{self, Align, Color32, Layout, RichText, TextEdit, TextStyle, Ui},
+    egui::{self, Align, Color32, Layout, RichText, ScrollArea, TextEdit, TextStyle, Ui},
     App, CreationContext,
 };
 use log::{debug, error, warn};
@@ -440,14 +440,18 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
             .response;
 
         ui.with_layout(Layout::default(), |ui| {
-            egui::ScrollArea::vertical()
+            ScrollArea::vertical()
                 .id_source("console")
                 .auto_shrink([false, false])
                 .stick_to_bottom()
                 .show(ui, |ui| {
-                    for s in output {
-                        ui.monospace(s);
-                    }
+                    let s = output.join("\n");
+                    let mut s_s = s.as_str();
+
+                    TextEdit::multiline(&mut s_s)
+                        .desired_width(ui.available_width())
+                        .font(ui.style().text_styles[&TextStyle::Monospace].clone())
+                        .show(ui);
                 });
         });
 
