@@ -3,7 +3,7 @@ mod priority_queue;
 use crate::{
     app::priority_queue::PriorityQueue,
     git::{
-        self, build_git_history_graph, Commit, Diff, HistoryGraph, ObjectId, Reference,
+        self, build_git_history_graph, Commit, Diff, HistoryGraph, Identifier, ObjectId, Reference,
         ReferenceId, Repo, SortType,
     },
 };
@@ -50,11 +50,6 @@ impl ViewState {
     }
 }
 
-pub enum CheckoutItem {
-    Reference(ReferenceId),
-    Object(ObjectId),
-}
-
 pub enum AppRequest {
     OpenRepo(PathBuf),
     GetCommitGraph {
@@ -80,9 +75,10 @@ pub enum AppRequest {
         commit_list: Vec<ObjectId>,
         search_string: String,
     },
-    Checkout(RepoState, CheckoutItem),
+    Checkout(RepoState, Identifier),
     Delete(RepoState, ReferenceId),
     CherryPick(RepoState, ObjectId),
+    Merge(RepoState, Identifier),
     ExecuteGitCommand(RepoState, String),
 }
 
@@ -198,6 +194,9 @@ impl App {
             }
             AppRequest::CherryPick(repo_state, id) => {
                 self.execute_command(&repo_state, &git::commandline::cherry_pick(&id))?;
+            }
+            AppRequest::Merge(repo_state, id) => {
+                self.execute_command(&repo_state, &git::commandline::merge(&id))?;
             }
             AppRequest::ExecuteGitCommand(repo_state, cmd) => {
                 let cmd = cmd.trim();

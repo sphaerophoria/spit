@@ -11,8 +11,8 @@ use commit_view::{CommitView, CommitViewAction};
 use sidebar::{Sidebar, SidebarAction};
 
 use crate::{
-    app::{AppEvent, AppRequest, CheckoutItem, RepoState, ViewState},
-    git::{Commit, ObjectId, ReferenceId},
+    app::{AppEvent, AppRequest, RepoState, ViewState},
+    git::{Commit, Identifier, ObjectId, ReferenceId},
     util::Cache,
 };
 
@@ -185,9 +185,9 @@ impl GuiInner {
         Ok(())
     }
 
-    fn request_checkout(&mut self, item: CheckoutItem) -> Result<()> {
+    fn request_checkout(&mut self, id: Identifier) -> Result<()> {
         self.tx
-            .send(AppRequest::Checkout((*self.repo_state).clone(), item))
+            .send(AppRequest::Checkout((*self.repo_state).clone(), id))
             .context("Failed to send checkout request")?;
 
         Ok(())
@@ -202,11 +202,8 @@ impl GuiInner {
                 commit_log::CommitLogAction::FetchCommit(id) => {
                     self.request_commit(id)?;
                 }
-                commit_log::CommitLogAction::CheckoutObject(id) => {
-                    self.request_checkout(CheckoutItem::Object(id))?;
-                }
-                commit_log::CommitLogAction::CheckoutReference(id) => {
-                    self.request_checkout(CheckoutItem::Reference(id))?;
+                commit_log::CommitLogAction::Checkout(id) => {
+                    self.request_checkout(id)?;
                 }
                 commit_log::CommitLogAction::DeleteReference(id) => {
                     self.tx
@@ -216,6 +213,11 @@ impl GuiInner {
                 commit_log::CommitLogAction::CherryPick(id) => {
                     self.tx
                         .send(AppRequest::CherryPick((*self.repo_state).clone(), id))
+                        .context("Failed to send delete request")?;
+                }
+                commit_log::CommitLogAction::Merge(id) => {
+                    self.tx
+                        .send(AppRequest::Merge((*self.repo_state).clone(), id))
                         .context("Failed to send delete request")?;
                 }
                 commit_log::CommitLogAction::Search {
@@ -325,7 +327,7 @@ impl GuiInner {
 
         match sidebar_action {
             SidebarAction::Checkout(id) => {
-                self.request_checkout(CheckoutItem::Reference(id))?;
+                self.request_checkout(Identifier::Reference(id))?;
             }
             SidebarAction::Delete(id) => {
                 self.tx

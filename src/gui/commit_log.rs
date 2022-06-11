@@ -2,7 +2,7 @@ use crate::{
     app::RepoState,
     git::{
         graph::{Edge, GraphPoint},
-        Commit, HistoryGraph, ObjectId, ReferenceId,
+        Commit, HistoryGraph, Identifier, ObjectId, ReferenceId,
     },
     gui::{reference_color, reference_underline, try_set_clipboard, SearchAction, SearchBar},
     util::Cache,
@@ -199,10 +199,10 @@ fn generate_search_prev(
 
 pub(super) enum CommitLogAction {
     FetchCommit(ObjectId),
-    CheckoutObject(ObjectId),
-    CheckoutReference(ReferenceId),
+    Checkout(Identifier),
     DeleteReference(ReferenceId),
     CherryPick(ObjectId),
+    Merge(Identifier),
     Search {
         commit_list: Vec<ObjectId>,
         search_string: String,
@@ -383,30 +383,56 @@ impl CommitLog {
                     }
 
                     commit_message_response.context_menu(|ui| {
-                        if add_no_wrap_button(ui, "Copy hash").clicked() {
-                            try_set_clipboard(clipboard, node.id.to_string());
-                            ui.close_menu();
-                        }
-
-                        for ref_id in &node_branches {
-                            if add_no_wrap_button(ui, &format!("Copy {}", ref_id)).clicked() {
-                                try_set_clipboard(clipboard, ref_id.to_string());
+                        ui.menu_button("Copy", |ui| {
+                            if add_no_wrap_button(ui, "Copy hash").clicked() {
+                                try_set_clipboard(clipboard, node.id.to_string());
                                 ui.close_menu();
                             }
-                        }
 
-                        ui.separator();
+                            for ref_id in &node_branches {
+                                if add_no_wrap_button(ui, &format!("Copy {}", ref_id)).clicked() {
+                                    try_set_clipboard(clipboard, ref_id.to_string());
+                                    ui.close_menu();
+                                }
+                            }
+                        });
 
-                        if add_no_wrap_button(ui, "Checkout hash").clicked() {
-                            actions.push(CommitLogAction::CheckoutObject(node.id.clone()));
-                            ui.close_menu();
-                        }
-
-                        for &ref_id in &node_branches {
-                            if add_no_wrap_button(ui, &format!("Checkout {}", ref_id)).clicked() {
-                                actions.push(CommitLogAction::CheckoutReference(ref_id.clone()));
+                        ui.menu_button("Checkout", |ui| {
+                            if add_no_wrap_button(ui, "Checkout hash").clicked() {
+                                actions.push(CommitLogAction::Checkout(Identifier::Object(
+                                    node.id.clone(),
+                                )));
                                 ui.close_menu();
                             }
+
+                            for &ref_id in &node_branches {
+                                match ref_id {
+                                    ReferenceId::LocalBranch(_) => (),
+                                    _ => continue,
+                                }
+
+                                if add_no_wrap_button(ui, &format!("Checkout {}", ref_id)).clicked()
+                                {
+                                    actions.push(CommitLogAction::Checkout(Identifier::Reference(
+                                        ref_id.clone(),
+                                    )));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+
+                        if !node_branches.is_empty() {
+                            ui.menu_button("Delete", |ui| {
+                                for &ref_id in &node_branches {
+                                    if add_no_wrap_button(ui, &format!("Delete {}", ref_id))
+                                        .clicked()
+                                    {
+                                        actions
+                                            .push(CommitLogAction::DeleteReference(ref_id.clone()));
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
                         }
 
                         ui.separator();
@@ -416,14 +442,23 @@ impl CommitLog {
                             ui.close_menu();
                         }
 
-                        ui.separator();
-
-                        for &ref_id in &node_branches {
-                            if add_no_wrap_button(ui, &format!("Delete {}", ref_id)).clicked() {
-                                actions.push(CommitLogAction::DeleteReference(ref_id.clone()));
+                        ui.menu_button("Merge", |ui| {
+                            if add_no_wrap_button(ui, "Merge hash").clicked() {
+                                actions.push(CommitLogAction::Merge(Identifier::Object(
+                                    node.id.clone(),
+                                )));
                                 ui.close_menu();
                             }
-                        }
+
+                            for &ref_id in &node_branches {
+                                if add_no_wrap_button(ui, &format!("Merge {}", ref_id)).clicked() {
+                                    actions.push(CommitLogAction::Merge(Identifier::Reference(
+                                        ref_id.clone(),
+                                    )));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                     });
                 }
             });

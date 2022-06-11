@@ -111,6 +111,23 @@ impl<'a> TryFrom<&git2::Reference<'a>> for ReferenceId {
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, PartialOrd, Ord)]
+pub enum Identifier {
+    Reference(ReferenceId),
+    Object(ObjectId),
+}
+
+impl fmt::Display for Identifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            Identifier::Reference(id) => f.write_str(&id.to_string())?,
+            Identifier::Object(id) => f.write_str(&id.to_string())?,
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, PartialOrd, Ord)]
 pub struct Reference {
     pub(crate) id: ReferenceId,
     pub(crate) head: ObjectId,
