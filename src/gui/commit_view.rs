@@ -309,6 +309,14 @@ fn extract_line_highlight_positions(
     line_highlight_positions
 }
 
+#[derive(Hash)]
+struct LayoutCacheKey<'a> {
+    s: &'a str,
+    selected_highlight_pos: &'a Option<usize>,
+    highlight_positions: &'a [usize],
+    highlight_len: usize,
+}
+
 fn diff_view_layouter(
     ui: &Ui,
     cache: &mut Cache<u64, LayoutJob>,
@@ -318,7 +326,12 @@ fn diff_view_layouter(
     mut highlight_positions: Vec<usize>,
     highlight_len: usize,
 ) -> LayoutJob {
-    let hash = eframe::egui::util::hash(s);
+    let hash = eframe::egui::util::hash(LayoutCacheKey {
+        s,
+        selected_highlight_pos: &selected_highlight_pos,
+        highlight_positions: &highlight_positions,
+        highlight_len,
+    });
 
     if let Some(job) = cache.get(&hash) {
         return job.clone();
@@ -506,6 +519,10 @@ fn diff_content_to_string(content: &DiffContent) -> Result<String> {
 }
 
 fn find_in_diff(diff: &FileDiffStrings, text: &str) -> Vec<ProcessedDiffOffset> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
     diff.iter()
         .enumerate()
         .flat_map(|(file_index, file)| {
