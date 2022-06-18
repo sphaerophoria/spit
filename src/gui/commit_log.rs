@@ -203,6 +203,7 @@ pub(super) enum CommitLogAction {
     DeleteReference(ReferenceId),
     CherryPick(ObjectId),
     Merge(Identifier),
+    Append(String),
     Search {
         commit_list: Vec<ObjectId>,
         search_string: String,
@@ -455,6 +456,22 @@ impl CommitLog {
                                     actions.push(CommitLogAction::Merge(Identifier::Reference(
                                         ref_id.clone(),
                                     )));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+
+                        ui.separator();
+
+                        ui.menu_button("Append to command", |ui| {
+                            if add_no_wrap_button(ui, "Hash").clicked() {
+                                actions.push(CommitLogAction::Append(node.id.to_string()));
+                                ui.close_menu();
+                            }
+
+                            for &ref_id in &node_branches {
+                                if add_no_wrap_button(ui, &ref_id.to_string()).clicked() {
+                                    actions.push(CommitLogAction::Append(ref_id.to_string()));
                                     ui.close_menu();
                                 }
                             }

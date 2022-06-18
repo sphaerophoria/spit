@@ -220,6 +220,10 @@ impl GuiInner {
                         .send(AppRequest::Merge((*self.repo_state).clone(), id))
                         .context("Failed to send delete request")?;
                 }
+                commit_log::CommitLogAction::Append(s) => {
+                    self.git_command.push(' ');
+                    self.git_command.push_str(&s);
+                }
                 commit_log::CommitLogAction::Search {
                     commit_list,
                     search_string,
