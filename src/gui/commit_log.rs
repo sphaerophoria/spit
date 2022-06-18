@@ -197,6 +197,20 @@ fn generate_search_prev(
     )
 }
 
+fn add_no_wrap_buttons<I, T>(ui: &mut Ui, ids: I) -> Option<T>
+where
+    I: IntoIterator<Item = T>,
+    T: ToString,
+{
+    for id in ids {
+        if add_no_wrap_button(ui, &id.to_string()).clicked() {
+            return Some(id);
+        }
+    }
+
+    None
+}
+
 pub(super) enum CommitLogAction {
     FetchCommit(ObjectId),
     Checkout(Identifier),
@@ -384,59 +398,43 @@ impl CommitLog {
                     }
 
                     commit_message_response.context_menu(|ui| {
-                        ui.menu_button("Copy", |ui| {
-                            if add_no_wrap_button(ui, "Copy hash").clicked() {
-                                try_set_clipboard(clipboard, node.id.to_string());
-                                ui.close_menu();
-                            }
+                        let all_refs = node_branches
+                            .iter()
+                            .map(|x| Identifier::Reference((*x).clone()));
 
-                            for ref_id in &node_branches {
-                                if add_no_wrap_button(ui, &format!("Copy {}", ref_id)).clicked() {
-                                    try_set_clipboard(clipboard, ref_id.to_string());
-                                    ui.close_menu();
+                        let hash_and_all_refs = [Identifier::Object(node.id.clone())]
+                            .into_iter()
+                            .chain(all_refs.clone());
+
+                        let hash_and_local_branches = [Identifier::Object(node.id.clone())]
+                            .into_iter()
+                            .chain(node_branches.iter().filter_map(|x| match x {
+                                ReferenceId::LocalBranch(_) => {
+                                    Some(Identifier::Reference((*x).clone()))
                                 }
-                            }
+                                _ => None,
+                            }));
+
+                        let local_refs = node_branches.iter().filter_map(|x| match x {
+                            ReferenceId::LocalBranch(_) | ReferenceId::Tag(_) => Some((*x).clone()),
+                            _ => None,
                         });
 
                         ui.menu_button("Checkout", |ui| {
-                            if add_no_wrap_button(ui, "Checkout hash").clicked() {
-                                actions.push(CommitLogAction::Checkout(Identifier::Object(
-                                    node.id.clone(),
-                                )));
+                            if let Some(identifier) =
+                                add_no_wrap_buttons(ui, hash_and_local_branches.clone())
+                            {
+                                actions.push(CommitLogAction::Checkout(identifier));
                                 ui.close_menu();
-                            }
-
-                            for &ref_id in &node_branches {
-                                match ref_id {
-                                    ReferenceId::LocalBranch(_) => (),
-                                    _ => continue,
-                                }
-
-                                if add_no_wrap_button(ui, &format!("Checkout {}", ref_id)).clicked()
-                                {
-                                    actions.push(CommitLogAction::Checkout(Identifier::Reference(
-                                        ref_id.clone(),
-                                    )));
-                                    ui.close_menu();
-                                }
                             }
                         });
 
-                        if !node_branches.is_empty() {
-                            ui.menu_button("Delete", |ui| {
-                                for &ref_id in &node_branches {
-                                    if add_no_wrap_button(ui, &format!("Delete {}", ref_id))
-                                        .clicked()
-                                    {
-                                        actions
-                                            .push(CommitLogAction::DeleteReference(ref_id.clone()));
-                                        ui.close_menu();
-                                    }
-                                }
-                            });
-                        }
-
-                        ui.separator();
+                        ui.menu_button("Delete", |ui| {
+                            if let Some(identifier) = add_no_wrap_buttons(ui, local_refs.clone()) {
+                                actions.push(CommitLogAction::DeleteReference(identifier));
+                                ui.close_menu();
+                            }
+                        });
 
                         if add_no_wrap_button(ui, "Cherry pick").clicked() {
                             actions.push(CommitLogAction::CherryPick(node.id.clone()));
@@ -444,36 +442,31 @@ impl CommitLog {
                         }
 
                         ui.menu_button("Merge", |ui| {
-                            if add_no_wrap_button(ui, "Merge hash").clicked() {
-                                actions.push(CommitLogAction::Merge(Identifier::Object(
-                                    node.id.clone(),
-                                )));
+                            if let Some(identifier) =
+                                add_no_wrap_buttons(ui, hash_and_all_refs.clone())
+                            {
+                                actions.push(CommitLogAction::Merge(identifier));
                                 ui.close_menu();
-                            }
-
-                            for &ref_id in &node_branches {
-                                if add_no_wrap_button(ui, &format!("Merge {}", ref_id)).clicked() {
-                                    actions.push(CommitLogAction::Merge(Identifier::Reference(
-                                        ref_id.clone(),
-                                    )));
-                                    ui.close_menu();
-                                }
                             }
                         });
 
                         ui.separator();
 
-                        ui.menu_button("Append to command", |ui| {
-                            if add_no_wrap_button(ui, "Hash").clicked() {
-                                actions.push(CommitLogAction::Append(node.id.to_string()));
+                        ui.menu_button("Copy", |ui| {
+                            if let Some(identifier) =
+                                add_no_wrap_buttons(ui, hash_and_all_refs.clone())
+                            {
+                                try_set_clipboard(clipboard, identifier.to_string());
                                 ui.close_menu();
                             }
+                        });
 
-                            for &ref_id in &node_branches {
-                                if add_no_wrap_button(ui, &ref_id.to_string()).clicked() {
-                                    actions.push(CommitLogAction::Append(ref_id.to_string()));
-                                    ui.close_menu();
-                                }
+                        ui.menu_button("Append to command", |ui| {
+                            if let Some(identifier) =
+                                add_no_wrap_buttons(ui, hash_and_all_refs.clone())
+                            {
+                                actions.push(CommitLogAction::Append(identifier.to_string()));
+                                ui.close_menu();
                             }
                         });
                     });

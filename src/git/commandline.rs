@@ -22,8 +22,8 @@ pub(crate) fn delete(ref_id: &ReferenceId) -> Result<String> {
         ReferenceId::LocalBranch(name) => format!("git branch -D {}", escaped_string(name)),
         ReferenceId::RemoteBranch(name) => {
             let (remote, name) = split_remote_reference(name)?;
-            format!(
-                "git push {} :{}",
+            bail!(
+                "Refusing to run remote modifying operation. Run git push {} :{}",
                 escaped_string(remote),
                 escaped_string(name)
             )
