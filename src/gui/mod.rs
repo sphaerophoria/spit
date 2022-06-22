@@ -236,7 +236,6 @@ impl GuiInner {
                         .context("Failed to send delete request")?;
                 }
                 commit_log::CommitLogAction::Append(s) => {
-                    self.git_command.push(' ');
                     self.git_command.push_str(&s);
                 }
                 commit_log::CommitLogAction::Search {
