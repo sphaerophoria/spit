@@ -197,18 +197,30 @@ fn generate_search_prev(
     )
 }
 
-fn add_no_wrap_buttons<I, T>(ui: &mut Ui, ids: I) -> Option<T>
+// Question mark hurts readability here IMO
+#[allow(clippy::question_mark)]
+fn add_submenu<I, T>(ui: &mut Ui, name: &str, ids: I) -> Option<T>
 where
     I: IntoIterator<Item = T>,
     T: ToString,
 {
-    for id in ids {
-        if add_no_wrap_button(ui, &id.to_string()).clicked() {
-            return Some(id);
-        }
+    let mut ids = ids.into_iter().peekable();
+
+    if ids.peek().is_none() {
+        return None;
     }
 
-    None
+    ui.menu_button(name, |ui| {
+        for id in ids {
+            if add_no_wrap_button(ui, &id.to_string()).clicked() {
+                ui.close_menu();
+                return Some(id);
+            }
+        }
+        None
+    })
+    .inner
+    .flatten()
 }
 
 pub(super) enum CommitLogAction {
@@ -420,55 +432,39 @@ impl CommitLog {
                             _ => None,
                         });
 
-                        ui.menu_button("Checkout", |ui| {
-                            if let Some(identifier) =
-                                add_no_wrap_buttons(ui, hash_and_local_branches.clone())
-                            {
-                                actions.push(CommitLogAction::Checkout(identifier));
-                                ui.close_menu();
-                            }
-                        });
+                        if let Some(identifier) =
+                            add_submenu(ui, "Checkout", hash_and_local_branches.clone())
+                        {
+                            actions.push(CommitLogAction::Checkout(identifier));
+                        }
 
-                        ui.menu_button("Delete", |ui| {
-                            if let Some(identifier) = add_no_wrap_buttons(ui, local_refs.clone()) {
-                                actions.push(CommitLogAction::DeleteReference(identifier));
-                                ui.close_menu();
-                            }
-                        });
+                        if let Some(identifier) = add_submenu(ui, "Delete", local_refs.clone()) {
+                            actions.push(CommitLogAction::DeleteReference(identifier));
+                        }
 
                         if add_no_wrap_button(ui, "Cherry pick").clicked() {
                             actions.push(CommitLogAction::CherryPick(node.id.clone()));
                             ui.close_menu();
                         }
 
-                        ui.menu_button("Merge", |ui| {
-                            if let Some(identifier) =
-                                add_no_wrap_buttons(ui, hash_and_all_refs.clone())
-                            {
-                                actions.push(CommitLogAction::Merge(identifier));
-                                ui.close_menu();
-                            }
-                        });
+                        if let Some(identifier) =
+                            add_submenu(ui, "Merge", hash_and_all_refs.clone())
+                        {
+                            actions.push(CommitLogAction::Merge(identifier));
+                        }
 
                         ui.separator();
 
-                        ui.menu_button("Copy", |ui| {
-                            if let Some(identifier) =
-                                add_no_wrap_buttons(ui, hash_and_all_refs.clone())
-                            {
-                                try_set_clipboard(clipboard, identifier.to_string());
-                                ui.close_menu();
-                            }
-                        });
+                        if let Some(identifier) = add_submenu(ui, "Copy", hash_and_all_refs.clone())
+                        {
+                            try_set_clipboard(clipboard, identifier.to_string());
+                        }
 
-                        ui.menu_button("Append to command", |ui| {
-                            if let Some(identifier) =
-                                add_no_wrap_buttons(ui, hash_and_all_refs.clone())
-                            {
-                                actions.push(CommitLogAction::Append(identifier.to_string()));
-                                ui.close_menu();
-                            }
-                        });
+                        if let Some(identifier) =
+                            add_submenu(ui, "Append to command", hash_and_all_refs.clone())
+                        {
+                            actions.push(CommitLogAction::Append(identifier.to_string()));
+                        }
                     });
                 }
             });
