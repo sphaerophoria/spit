@@ -37,7 +37,7 @@ use std::{
 
 struct GuiInner {
     tx: Sender<AppRequest>,
-    output: Vec<String>,
+    output: String,
     git_command: String,
     show_console: bool,
     outgoing_requests: HashSet<ObjectId>,
@@ -59,7 +59,7 @@ impl GuiInner {
     fn new(tx: Sender<AppRequest>) -> Result<GuiInner> {
         Ok(GuiInner {
             tx,
-            output: Vec::new(),
+            output: Default::default(),
             git_command: String::new(),
             show_console: true,
             outgoing_requests: HashSet::new(),
@@ -94,7 +94,7 @@ impl GuiInner {
         match response {
             AppEvent::OutputLogged(s) => {
                 // FIXME: Rolling buffer
-                self.output.push(s);
+                self.output.push_str(&s);
             }
             AppEvent::CommitFetched { repo, commit } => {
                 let current_repo_is_same = self.repo_state.repo == repo;
@@ -151,7 +151,7 @@ impl GuiInner {
             }
             AppEvent::Error(e) => {
                 // FIXME: Proper error text
-                self.output.push(e);
+                self.output.push_str(&e);
             }
         }
     }
@@ -467,7 +467,7 @@ fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> ToolbarAction {
 // Clippy wants this to be a reference but that doesn't allow egui to change the length of the
 // string etc.
 #[allow(clippy::ptr_arg)]
-fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String) -> bool {
+fn render_console(ui: &mut egui::Ui, mut output: &str, git_command: &mut String) -> bool {
     // UI management...
     // As far as I can tell, ScrollArea is going to take up the remaining spcace if I do not set
     // auto_shrink to true, however I want auto_shrink to be false or else I cannot resize the pane
@@ -495,10 +495,7 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
                 .auto_shrink([false, false])
                 .stick_to_bottom()
                 .show(ui, |ui| {
-                    let s = output.join("\n");
-                    let mut s_s = s.as_str();
-
-                    TextEdit::multiline(&mut s_s)
+                    TextEdit::multiline(&mut output)
                         .desired_width(ui.available_width())
                         .font(ui.style().text_styles[&TextStyle::Monospace].clone())
                         .show(ui);

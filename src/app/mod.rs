@@ -1,7 +1,11 @@
 mod priority_queue;
+mod interactive_command_runner;
 
 use crate::{
-    app::priority_queue::PriorityQueue,
+    app::{
+        interactive_command_runner::InteractiveCommandRunner,
+        priority_queue::PriorityQueue,
+    },
     git::{
         self, build_git_history_graph, Commit, Diff, HistoryGraph, Identifier, ObjectId, Reference,
         ReferenceId, RemoteRef, Repo, SortType,
@@ -17,7 +21,7 @@ use std::{
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Command,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{Mutex, mpsc::{self, Receiver, Sender}},
     thread,
     time::{Duration, Instant},
 };
@@ -112,23 +116,40 @@ pub enum AppEvent {
     Error(String),
 }
 
-pub struct App {
+pub struct App 
+{
     tx: Sender<AppEvent>,
     rx: PriorityQueue,
     notifier: RecommendedWatcher,
+    command_runner: InteractiveCommandRunner,
     repo: Option<Repo>,
 }
 
-impl App {
+impl App 
+{
     pub fn new(
         event_tx: Sender<AppEvent>,
         request_tx: Sender<AppRequest>,
         request_rx: Receiver<AppRequest>,
     ) -> Result<App> {
+        let on_command_output = {
+            // Wrap in mutex to satisfy sync constraint. There should never be any real contention
+            // on it
+            let event_tx = Mutex::new(event_tx.clone());
+            move |s: String| {
+                println!("Locking");
+                let event_tx = event_tx.lock().unwrap();
+                println!("locked");
+                if let Err(e) = event_tx.send(AppEvent::OutputLogged(s)) {
+                    error!("Failed to send command output to gui");
+                }
+            }
+        };
         Ok(App {
             tx: event_tx,
             rx: PriorityQueue::new(request_rx),
             notifier: spawn_watcher(request_tx)?,
+            command_runner: InteractiveCommandRunner::new(on_command_output)?,
             repo: None,
         })
     }
@@ -159,38 +180,8 @@ impl App {
             .send(AppEvent::OutputLogged(cmd.to_string()))
             .context("Failed to send response to gui")?;
 
-        // NOTE: This looks really wrong, and that's because it is to some extent. We should not be
-        // running bash commands for every git command we want to run. But this has the large benefit
-        // that every action the program executes can be copy pasted by a user and run again. This
-        // makes interop with command line users very nice and is worth the architectural incorrectness
-        // of shelling out
-        let mut bash_cmd = OsString::new();
-        bash_cmd.push(cmd);
-        bash_cmd.push(" 2>&1");
-
-        let editor = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|x| x.to_path_buf()))
-            .map(|p| p.join("spit-editor"));
-
-        let mut command = Command::new("/bin/bash");
-
-        command.arg("-c").arg(bash_cmd).current_dir(repo_root);
-
-        if let Some(editor) = editor {
-            command.env("EDITOR", editor);
-        }
-
-        let output = command
-            .output()
-            .with_context(|| format!("Failed to run {}", cmd))?;
-
-        let parsed =
-            String::from_utf8(output.stdout).context("Git response was not a valid utf8 string")?;
-
-        self.tx
-            .send(AppEvent::OutputLogged(parsed))
-            .context("Failed to send response to gui")?;
+        self.command_runner.spawn(cmd, &repo_root)
+            .context("Failed to run command")?;
 
         Ok(())
     }
@@ -209,9 +200,14 @@ impl App {
             AppRequest::Merge(repo_state, id) => {
                 self.execute_command(&repo_state, &git::commandline::merge(&id))?;
             }
-            AppRequest::ExecuteGitCommand(repo_state, cmd) => {
+            AppRequest::ExecuteGitCommand(_repo_state, cmd) => {
                 let cmd = cmd.trim();
-                self.execute_command(&repo_state, cmd)?;
+                match &self.repo {
+                    Some(repo) => {
+                        self.command_runner.push(&cmd, &repo.repo_root())?
+                    }
+                    None => (),
+                }
             }
             AppRequest::GetCommit { expected_repo, id } => match &mut self.repo {
                 Some(repo) => {
