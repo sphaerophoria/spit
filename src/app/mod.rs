@@ -1,11 +1,8 @@
-mod priority_queue;
 mod interactive_command_runner;
+mod priority_queue;
 
 use crate::{
-    app::{
-        interactive_command_runner::InteractiveCommandRunner,
-        priority_queue::PriorityQueue,
-    },
+    app::{interactive_command_runner::InteractiveCommandRunner, priority_queue::PriorityQueue},
     git::{
         self, build_git_history_graph, Commit, Diff, HistoryGraph, Identifier, ObjectId, Reference,
         ReferenceId, RemoteRef, Repo, SortType,
@@ -18,10 +15,12 @@ use notify::{self, RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 
 use std::{
     collections::HashSet,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     path::{Path, PathBuf},
-    process::Command,
-    sync::{Mutex, mpsc::{self, Receiver, Sender}},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -116,8 +115,7 @@ pub enum AppEvent {
     Error(String),
 }
 
-pub struct App 
-{
+pub struct App {
     tx: Sender<AppEvent>,
     rx: PriorityQueue,
     notifier: RecommendedWatcher,
@@ -125,8 +123,7 @@ pub struct App
     repo: Option<Repo>,
 }
 
-impl App 
-{
+impl App {
     pub fn new(
         event_tx: Sender<AppEvent>,
         request_tx: Sender<AppRequest>,
@@ -140,7 +137,7 @@ impl App
                 println!("Locking");
                 let event_tx = event_tx.lock().unwrap();
                 println!("locked");
-                if let Err(e) = event_tx.send(AppEvent::OutputLogged(s)) {
+                if let Err(_e) = event_tx.send(AppEvent::OutputLogged(s)) {
                     error!("Failed to send command output to gui");
                 }
             }
@@ -180,7 +177,8 @@ impl App
             .send(AppEvent::OutputLogged(cmd.to_string()))
             .context("Failed to send response to gui")?;
 
-        self.command_runner.spawn(cmd, &repo_root)
+        self.command_runner
+            .spawn(cmd, repo_root)
             .context("Failed to run command")?;
 
         Ok(())
@@ -203,9 +201,7 @@ impl App
             AppRequest::ExecuteGitCommand(_repo_state, cmd) => {
                 let cmd = cmd.trim();
                 match &self.repo {
-                    Some(repo) => {
-                        self.command_runner.push(&cmd, &repo.repo_root())?
-                    }
+                    Some(repo) => self.command_runner.push(cmd, repo.repo_root())?,
                     None => (),
                 }
             }
