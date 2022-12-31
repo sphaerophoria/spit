@@ -471,6 +471,14 @@ impl CommitLog {
                         {
                             actions.push(CommitLogAction::Append(identifier.to_string()));
                         }
+
+                        if let Some(identifier) = add_submenu(
+                            ui,
+                            "Append to command (with space)",
+                            hash_and_all_refs.clone(),
+                        ) {
+                            actions.push(CommitLogAction::Append(format!("{} ", identifier)));
+                        }
                     });
                 }
             });
