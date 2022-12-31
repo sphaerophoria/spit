@@ -173,7 +173,7 @@ impl App {
             .and_then(|exe| exe.parent().map(|x| x.to_path_buf()))
             .map(|p| p.join("spit-editor"));
 
-        let mut command = Command::new("/bin/bash");
+        let mut command = Command::new("bash");
 
         command.arg("-c").arg(bash_cmd).current_dir(repo_root);
 
