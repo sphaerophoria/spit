@@ -131,9 +131,9 @@ fn render_commit_node(ui: &mut Ui, node_pos: &GraphPoint, converter: &PositionCo
 }
 
 fn build_branch_id_lookup(state: &RepoState) -> HashMap<ObjectId, Vec<ReferenceId>> {
-    let mut ret = HashMap::new();
+    let mut ret: HashMap<ObjectId, Vec<ReferenceId>> = HashMap::new();
     for branch in &state.references {
-        let entry = ret.entry(branch.head.clone()).or_insert(vec![]);
+        let entry = ret.entry(branch.head.clone()).or_default();
         entry.push(branch.id.clone());
     }
 

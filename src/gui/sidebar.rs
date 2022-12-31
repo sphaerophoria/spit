@@ -143,7 +143,7 @@ fn filter_references<'a>(
     references: &'a [Reference],
 ) -> impl Iterator<Item = ReferenceId> + 'a {
     references.iter().filter_map(move |x| {
-        if x.id.to_string().contains(&filter) {
+        if x.id.to_string().contains(filter) {
             Some(x.id.clone())
         } else {
             None

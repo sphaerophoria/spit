@@ -431,7 +431,7 @@ fn get_refs_for_remote(git_path: &Path, remote_name: &str) -> Result<Vec<RemoteR
     let output = Command::new("git")
         .arg("-C")
         .arg(git_path)
-        .args(&["ls-remote", "-q", remote_name])
+        .args(["ls-remote", "-q", remote_name])
         .output()?;
 
     if !output.status.success() {
