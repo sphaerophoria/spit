@@ -84,6 +84,7 @@ pub enum AppRequest {
     Checkout(RepoState, Identifier),
     Delete(RepoState, ReferenceId),
     CherryPick(RepoState, ObjectId),
+    Diff(ObjectId),
     Merge(RepoState, Identifier),
     ExecuteGitCommand(RepoState, String),
     UpdateRemotes {
@@ -165,8 +166,8 @@ impl App {
         // makes interop with command line users very nice and is worth the architectural incorrectness
         // of shelling out
         let mut bash_cmd = OsString::new();
+        bash_cmd.push("2>&1 ");
         bash_cmd.push(cmd);
-        bash_cmd.push(" 2>&1");
 
         let editor = std::env::current_exe()
             .ok()
@@ -205,6 +206,11 @@ impl App {
             }
             AppRequest::CherryPick(repo_state, id) => {
                 self.execute_command(&repo_state, &git::commandline::cherry_pick(&id))?;
+            }
+            AppRequest::Diff(id) => {
+                // Non-modifying action. RepoState not required
+                let repo_state = self.get_repo_state()?;
+                self.execute_command(&repo_state, &git::commandline::difftool(&id))?;
             }
             AppRequest::Merge(repo_state, id) => {
                 self.execute_command(&repo_state, &git::commandline::merge(&id))?;

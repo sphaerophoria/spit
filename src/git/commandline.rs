@@ -40,6 +40,13 @@ pub(crate) fn cherry_pick(id: &ObjectId) -> String {
     format!("git cherry-pick {}", escaped_string(&id.to_string()))
 }
 
+pub(crate) fn difftool(id: &ObjectId) -> String {
+    format!(
+        "git difftool -d {0}~1..{0} &",
+        escaped_string(&id.to_string())
+    )
+}
+
 pub(crate) fn merge(id: &Identifier) -> String {
     format!("git merge {}", escaped_string(&id.to_string()))
 }

@@ -230,6 +230,11 @@ impl GuiInner {
                         .send(AppRequest::CherryPick((*self.repo_state).clone(), id))
                         .context("Failed to send delete request")?;
                 }
+                commit_log::CommitLogAction::Diff(id) => {
+                    self.tx
+                        .send(AppRequest::Diff(id))
+                        .context("Failed to send delete request")?;
+                }
                 commit_log::CommitLogAction::Merge(id) => {
                     self.tx
                         .send(AppRequest::Merge((*self.repo_state).clone(), id))
