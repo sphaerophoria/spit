@@ -25,8 +25,7 @@ def main(remote, url):
             os.chdir(str(d))
             subprocess.run(['git', 'clone', str(git_dir), '.'], check=True)
             print(f"Copying target directory to temp dir")
-            (Path(d) / 'target').mkdir(parents=True)
-            shutil.copytree(git_dir / 'target/debug', 'target/debug')
+            (Path(d) / 'target').symlink_to(git_dir / 'target')
 
             for line in sys.stdin:
                 line = line.split(" ")
