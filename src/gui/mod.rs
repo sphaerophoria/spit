@@ -498,7 +498,7 @@ fn render_console(ui: &mut egui::Ui, output: &[String], git_command: &mut String
             ScrollArea::vertical()
                 .id_source("console")
                 .auto_shrink([false, false])
-                .stick_to_bottom()
+                .stick_to_bottom(true)
                 .show(ui, |ui| {
                     let s = output.join("\n");
                     let mut s_s = s.as_str();
@@ -581,7 +581,7 @@ impl<'a> SearchBar<'a> {
 
         ui.allocate_ui_with_layout(
             egui::vec2(width, ui.spacing().interact_size.y),
-            Layout::right_to_left(),
+            Layout::right_to_left(Align::Center),
             |ui| {
                 let next_response = ui.button("next");
                 let prev_response = ui.button("prev");

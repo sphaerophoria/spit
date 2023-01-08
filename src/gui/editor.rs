@@ -1,7 +1,7 @@
 use anyhow::Result;
 use eframe::{
     egui::{
-        self, text::LayoutJob, CentralPanel, Color32, ComboBox, FontId, Galley, Layout, ScrollArea,
+        self, text::LayoutJob, CentralPanel, Color32, ComboBox, Align, FontId, Galley, Layout, ScrollArea,
         TextEdit, TextFormat, TextStyle, TopBottomPanel, Ui, Visuals,
     },
     App, CreationContext,
@@ -85,14 +85,14 @@ impl App for Editor {
         });
 
         TopBottomPanel::bottom("dialog").show(ctx, |ui| {
-            ui.with_layout(Layout::right_to_left(), |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Finish").clicked() {
                     self.should_save = true;
-                    frame.quit();
+                    frame.close();
                 }
 
                 if ui.button("Cancel").clicked() {
-                    frame.quit();
+                    frame.close();
                 }
             });
         });
@@ -126,7 +126,7 @@ impl App for Editor {
         }
     }
 
-    fn on_exit(&mut self, _gl: &eframe::glow::Context) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if self.should_save {
             let mut f = match OpenOptions::new()
                 .write(true)

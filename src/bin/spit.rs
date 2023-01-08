@@ -33,4 +33,6 @@ fn main() -> Result<()> {
         native_options,
         Box::new(move |cc| Box::new(Gui::new(app_request_tx, app_response_rx, cc).unwrap())),
     );
+
+    Ok(())
 }

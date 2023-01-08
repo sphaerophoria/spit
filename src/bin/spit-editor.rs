@@ -14,4 +14,6 @@ fn main() -> Result<()> {
         Default::default(),
         Box::new(move |cc| Box::new(Editor::new(&filename, cc).unwrap())),
     );
+
+    Ok(())
 }
