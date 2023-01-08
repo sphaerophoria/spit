@@ -44,6 +44,7 @@ impl<K: Eq + Hash + Clone, V> Cache<K, V> {
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn set_size(&mut self, size: usize) {
         self.size = size;
         while self.order.len() > self.size {

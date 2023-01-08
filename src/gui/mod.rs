@@ -230,9 +230,9 @@ impl GuiInner {
                         .send(AppRequest::CherryPick((*self.repo_state).clone(), id))
                         .context("Failed to send delete request")?;
                 }
-                commit_log::CommitLogAction::Diff(id) => {
+                commit_log::CommitLogAction::DiffTool(id) => {
                     self.tx
-                        .send(AppRequest::Diff(id))
+                        .send(AppRequest::DiffTool(id))
                         .context("Failed to send delete request")?;
                 }
                 commit_log::CommitLogAction::Merge(id) => {
@@ -288,7 +288,8 @@ impl GuiInner {
                     expected_repo: self.repo_state.repo.clone(),
                     from: diff_request.from,
                     to: diff_request.to,
-                    ignore_whitespace: diff_request.ignore_whitespace,
+                    search_query: diff_request.search_query,
+                    options: diff_request.options,
                 })?;
             }
             CommitViewAction::None => (),
@@ -569,11 +570,6 @@ impl<'a> SearchBar<'a> {
             search_text,
             width: None,
         }
-    }
-
-    fn desired_width(mut self, width: f32) -> SearchBar<'a> {
-        self.width = Some(width);
-        self
     }
 
     fn show(self, ui: &mut Ui) -> SearchAction {

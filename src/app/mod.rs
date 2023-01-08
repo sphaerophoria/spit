@@ -3,19 +3,21 @@ mod priority_queue;
 use crate::{
     app::priority_queue::PriorityQueue,
     git::{
-        self, build_git_history_graph, Commit, Diff, HistoryGraph, Identifier, ObjectId, Reference,
-        ReferenceId, RemoteRef, Repo, SortType,
+        self, build_git_history_graph, Commit, Diff, HistoryGraph, Identifier, ModifiedFiles,
+        ObjectId, Reference, ReferenceId, RemoteRef, Repo, SortType,
     },
 };
 
 use anyhow::{bail, Context, Error, Result};
 use log::{debug, error, info};
 use notify::{self, RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use spiff::{DiffCollectionProcessor, DiffOptions};
 
 use std::{
     collections::HashSet,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    pin::Pin,
     process::Command,
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -56,6 +58,11 @@ impl ViewState {
     }
 }
 
+struct DiffProcessorWithData {
+    data: ModifiedFiles,
+    processor: Option<DiffCollectionProcessor<'static>>,
+}
+
 pub enum AppRequest {
     OpenRepo(PathBuf),
     GetCommitGraph {
@@ -73,7 +80,8 @@ pub enum AppRequest {
         expected_repo: PathBuf,
         from: ObjectId,
         to: ObjectId,
-        ignore_whitespace: bool,
+        options: DiffOptions,
+        search_query: String,
     },
     Search {
         expected_repo: PathBuf,
@@ -84,7 +92,7 @@ pub enum AppRequest {
     Checkout(RepoState, Identifier),
     Delete(RepoState, ReferenceId),
     CherryPick(RepoState, ObjectId),
-    Diff(ObjectId),
+    DiffTool(ObjectId),
     Merge(RepoState, Identifier),
     ExecuteGitCommand(RepoState, String),
     UpdateRemotes {
@@ -118,6 +126,8 @@ pub struct App {
     rx: PriorityQueue,
     notifier: RecommendedWatcher,
     repo: Option<Repo>,
+    // Pin<Box<..>> to allow self reference
+    processor: Option<Pin<Box<DiffProcessorWithData>>>,
 }
 
 impl App {
@@ -131,6 +141,7 @@ impl App {
             rx: PriorityQueue::new(request_rx),
             notifier: spawn_watcher(request_tx)?,
             repo: None,
+            processor: None,
         })
     }
 
@@ -207,7 +218,7 @@ impl App {
             AppRequest::CherryPick(repo_state, id) => {
                 self.execute_command(&repo_state, &git::commandline::cherry_pick(&id))?;
             }
-            AppRequest::Diff(id) => {
+            AppRequest::DiffTool(id) => {
                 // Non-modifying action. RepoState not required
                 let repo_state = self.get_repo_state()?;
                 self.execute_command(&repo_state, &git::commandline::difftool(&id))?;
@@ -245,7 +256,8 @@ impl App {
                 expected_repo,
                 from,
                 to,
-                ignore_whitespace,
+                options,
+                search_query,
             } => {
                 let repo = self
                     .repo
@@ -262,13 +274,49 @@ impl App {
                     return Ok(());
                 }
 
-                let diff = repo
-                    .diff(&from, &to, ignore_whitespace)
-                    .with_context(|| format!("Failed to retrieve diff for {} -> {}", from, to))?;
+                if self.processor.as_ref().map(|x| &x.data.id_a) != Some(&from)
+                    || self.processor.as_ref().map(|x| &x.data.id_b) != Some(&to)
+                {
+                    let modified_files = repo
+                        .modified_files(&from, &to)
+                        .context("Failed to retrieve modified files")?;
+
+                    self.processor = Some(Box::pin(DiffProcessorWithData {
+                        data: modified_files,
+                        processor: None,
+                    }));
+
+                    // HACK
+                    // The DiffCollectionProcessor internally stores different views of the input
+                    // data. It's API forces the data to be stored externally.
+                    //
+                    // At this level of abstraction anywhere we want to store the data across
+                    // calls forces self reference. Wrap our processor in a Pin<Box<..>> as a
+                    // guarantee that it does not move. Since our processor now lives in the same
+                    // struct as the data, we know that the data will not go out of scope while it
+                    // is still in use. We can transmute the struct to clobber the incorrect
+                    // lifetimes and move on
+                    let processor = self.processor.as_mut().unwrap();
+                    let internal_processor = DiffCollectionProcessor::new(
+                        &processor.data.files_a,
+                        &processor.data.files_b,
+                        &processor.data.labels,
+                    )?;
+                    processor.processor = unsafe { std::mem::transmute(internal_processor) };
+                }
+
+                let container = self.processor.as_mut().unwrap();
+                let processor = container.processor.as_mut().unwrap();
+                processor.process_new_options(&options);
+                processor.set_search_query(search_query);
+                let processed_diffs = processor.generate();
 
                 self.tx.send(AppEvent::DiffFetched {
                     repo: expected_repo,
-                    diff,
+                    diff: Diff {
+                        metadata: git::DiffMetadata { from, to, options },
+                        diff: processed_diffs,
+                    },
                 })?;
             }
             AppRequest::Search {

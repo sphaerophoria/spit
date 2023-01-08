@@ -1,18 +1,18 @@
 use crate::{
     git::{
-        decompress, pack::Pack, Commit, CommitMetadata, Diff, DiffContent, DiffFileHeader,
-        DiffMetadata, ObjectId, Reference, ReferenceId, RemoteRef,
+        decompress, pack::Pack, Commit, CommitMetadata, ModifiedFiles, ObjectId, Reference,
+        ReferenceId, RemoteRef,
     },
     util::Timer,
 };
 
 use anyhow::{Context, Error, Result};
 use flate2::Decompress;
-use git2::RepositoryOpenFlags;
+use git2::{RepositoryOpenFlags, TreeEntry, TreeWalkMode, TreeWalkResult};
 use log::{debug, error};
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -333,83 +333,93 @@ impl Repo {
             .try_into()
     }
 
-    pub(crate) fn diff(
-        &self,
-        id1: &ObjectId,
-        id2: &ObjectId,
-        ignore_whitespace: bool,
-    ) -> Result<Diff> {
+    pub(crate) fn modified_files(&self, id1: &ObjectId, id2: &ObjectId) -> Result<ModifiedFiles> {
         let oid1 = id1.into();
         let oid2 = id2.into();
 
         let t1 = self.git2_repo.find_commit(oid1)?.tree()?;
         let t2 = self.git2_repo.find_commit(oid2)?.tree()?;
 
-        let mut options = git2::DiffOptions::new();
-        options.ignore_whitespace(ignore_whitespace);
-        let diff = self
-            .git2_repo
-            .diff_tree_to_tree(Some(&t1), Some(&t2), Some(&mut options))?;
+        let mut t1_files = HashMap::new();
+        let mut t2_files = HashMap::new();
 
-        let mut current_hunk_header = String::new();
-        let mut output = Diff {
-            metadata: DiffMetadata {
-                from: id1.clone(),
-                to: id2.clone(),
-                ignore_whitespace,
-            },
-            items: Default::default(),
-        };
-        let mut binary_files = Vec::new();
-
-        diff.foreach(
-            &mut |_d, _f| true,
-            Some(&mut |delta, _blob| {
-                let file_header = DiffFileHeader {
-                    old_file: delta.old_file().path().map(|x| x.to_path_buf()),
-                    new_file: delta.new_file().path().map(|x| x.to_path_buf()),
-                };
-
-                binary_files.push(file_header);
-                true
-            }),
-            None,
-            Some(&mut |delta, hunk, line| {
-                let file_header = DiffFileHeader {
-                    old_file: delta.old_file().path().map(|x| x.to_path_buf()),
-                    new_file: delta.new_file().path().map(|x| x.to_path_buf()),
-                };
-
-                if let Some(hunk) = hunk {
-                    current_hunk_header = std::str::from_utf8(hunk.header()).unwrap().to_string();
+        let walk_insert_filename = |root: &str, entry: &TreeEntry, files: &mut HashMap<_, _>| {
+            match entry.kind() {
+                Some(git2::ObjectType::Blob) => {
+                    let mut full_path = root.as_bytes().to_vec();
+                    full_path.extend(entry.name_bytes());
+                    files.insert(full_path, entry.id());
                 }
+                Some(git2::ObjectType::Tree) => {
+                    return TreeWalkResult::Ok;
+                }
+                _ => unimplemented!(),
+            }
 
-                let file_entry = output
-                    .items
-                    .entry(file_header)
-                    .or_insert_with(|| DiffContent::Patch(Default::default()));
-                let file_entry = match file_entry {
-                    DiffContent::Binary => {
-                        error!("Found line diff for binary file");
-                        return true;
-                    }
-                    DiffContent::Patch(v) => v,
-                };
-                let v = file_entry
-                    .entry(current_hunk_header.clone())
-                    .or_insert_with(Vec::new);
+            TreeWalkResult::Ok
+        };
 
-                v.push(line.origin() as u8);
-                v.extend_from_slice(line.content());
-                true
-            }),
-        )?;
+        t1.walk(TreeWalkMode::PreOrder, |root, entry| {
+            walk_insert_filename(root, entry, &mut t1_files)
+        })
+        .context("Failed to walk tree 1")?;
 
-        output
-            .items
-            .extend(binary_files.into_iter().map(|f| (f, DiffContent::Binary)));
+        t2.walk(TreeWalkMode::PreOrder, |root, entry| {
+            walk_insert_filename(root, entry, &mut t2_files)
+        })
+        .context("Failed to walk tree 2")?;
 
-        Ok(output)
+        let mut changed_paths = t1_files
+            .iter()
+            .filter_map(|(path, id)| {
+                if t2_files.get(path) == Some(id) {
+                    None
+                } else {
+                    Some(path.clone())
+                }
+            })
+            .collect::<BTreeSet<Vec<u8>>>();
+
+        for (path, id) in t2_files.iter() {
+            if t1_files.get(path) != Some(id) {
+                changed_paths.insert(path.clone());
+            }
+        }
+
+        let paths_to_contents = |oid_lookup: &HashMap<Vec<u8>, git2::Oid>| {
+            changed_paths
+                .iter()
+                .map(|filename| {
+                    let id = match oid_lookup.get(filename) {
+                        Some(v) => v,
+                        None => return None,
+                    };
+
+                    let blob = match self.git2_repo.find_blob(*id) {
+                        Ok(v) => v,
+                        // FIXME: Returning None here seems wrong
+                        Err(_) => return None,
+                    };
+
+                    Some(blob.content().to_vec())
+                })
+                .collect::<Vec<Option<Vec<u8>>>>()
+        };
+
+        let content_1 = paths_to_contents(&t1_files);
+        let content_2 = paths_to_contents(&t2_files);
+        let labels = changed_paths
+            .iter()
+            .map(|x| String::from_utf8_lossy(x).to_string())
+            .collect::<Vec<_>>();
+
+        Ok(ModifiedFiles {
+            id_a: id1.clone(),
+            id_b: id2.clone(),
+            files_a: content_1,
+            files_b: content_2,
+            labels,
+        })
     }
 }
 

@@ -230,7 +230,7 @@ pub(super) enum CommitLogAction {
     CherryPick(ObjectId),
     Merge(Identifier),
     Append(String),
-    Diff(ObjectId),
+    DiffTool(ObjectId),
     Search {
         commit_list: Vec<ObjectId>,
         search_string: String,
@@ -455,7 +455,7 @@ impl CommitLog {
                         }
 
                         if add_no_wrap_button(ui, "Open diff tool").clicked() {
-                            actions.push(CommitLogAction::Diff(node.id.clone()));
+                            actions.push(CommitLogAction::DiffTool(node.id.clone()));
                             ui.close_menu();
                         }
 

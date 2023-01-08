@@ -11,7 +11,8 @@ pub(crate) use repo::{Repo, SortType};
 
 use anyhow::{Error, Result};
 use chrono::{DateTime, Utc};
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use spiff::{DiffOptions, ProcessedDiffCollection};
+use std::{fmt, path::PathBuf};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CommitMetadata {
@@ -198,21 +199,24 @@ impl fmt::Display for DiffFileHeader {
     }
 }
 
-type DiffHunkHeader = String;
-
-pub(crate) enum DiffContent {
-    Patch(BTreeMap<DiffHunkHeader, Vec<u8>>),
-    Binary,
-}
-
 #[derive(PartialEq, Eq, Hash)]
 pub struct DiffMetadata {
     pub(crate) from: ObjectId,
     pub(crate) to: ObjectId,
-    pub(crate) ignore_whitespace: bool,
+    pub(crate) options: DiffOptions,
 }
 
 pub struct Diff {
+    // FIXME: This should be checked by the view widget
+    #[allow(unused)]
     pub(crate) metadata: DiffMetadata,
-    pub(crate) items: BTreeMap<DiffFileHeader, DiffContent>,
+    pub(crate) diff: ProcessedDiffCollection,
+}
+
+pub struct ModifiedFiles {
+    pub(crate) id_a: ObjectId,
+    pub(crate) id_b: ObjectId,
+    pub(crate) files_a: Vec<Option<Vec<u8>>>,
+    pub(crate) files_b: Vec<Option<Vec<u8>>>,
+    pub(crate) labels: Vec<String>,
 }

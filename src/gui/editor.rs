@@ -1,8 +1,8 @@
 use anyhow::Result;
 use eframe::{
     egui::{
-        self, text::LayoutJob, CentralPanel, Color32, ComboBox, Align, FontId, Galley, Layout, ScrollArea,
-        TextEdit, TextFormat, TextStyle, TopBottomPanel, Ui, Visuals,
+        self, text::LayoutJob, Align, CentralPanel, Color32, ComboBox, FontId, Galley, Layout,
+        ScrollArea, TextEdit, TextFormat, TextStyle, TopBottomPanel, Ui, Visuals,
     },
     App, CreationContext,
 };
