@@ -6,10 +6,11 @@ use crate::{
     util::Timer,
 };
 
-use anyhow::{Context, Error, Result};
+use anyhow::{anyhow, Context, Error, Result};
+use chrono::{DateTime, FixedOffset, NaiveDateTime};
 use flate2::Decompress;
 use git2::{RepositoryOpenFlags, TreeEntry, TreeWalkMode, TreeWalkResult};
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -41,6 +42,7 @@ pub(crate) struct Repo {
     // metadata IDs that look up the CommitMetadata on demand.
     metadata_lookup: HashMap<ObjectId, usize>,
     metadata_storage: Vec<CommitMetadata>,
+    libgit2_storage: Vec<CommitMetadata>,
     decompressor: Decompress,
 }
 
@@ -65,15 +67,52 @@ impl Repo {
             packs,
             metadata_lookup: HashMap::new(),
             metadata_storage: Vec::new(),
+            libgit2_storage: Vec::new(),
             decompressor,
         })
     }
 
     #[allow(unused)]
-    pub(crate) fn get_commit_metadata(&mut self, id: &ObjectId) -> Result<Option<&CommitMetadata>> {
-        Ok(self
-            .get_commit_metadata_idx(id)?
-            .map(|idx| &self.metadata_storage[idx]))
+    pub(crate) fn get_commit_metadata(&mut self, id: &ObjectId) -> Result<Option<CommitMetadata>> {
+        match self.get_commit_metadata_idx(id) {
+            Ok(Some(v)) => Ok(Some(self.metadata_storage[v].clone())),
+            Ok(None) => Ok(None),
+            Err(_) => Ok(self.get_commit_metadata_libgit2(id).ok()),
+        }
+    }
+
+    fn get_commit_metadata_libgit2(&self, id: &ObjectId) -> Result<CommitMetadata> {
+        let rev = id.into();
+        let commit = self
+            .git2_repo
+            .find_commit(rev)
+            .context("Failed to find commit for rev")?;
+        let oid = ObjectId::from(&rev);
+        let parents = commit
+            .parents()
+            .map(|p| ObjectId::from(p.id()))
+            .collect::<Vec<_>>();
+        let to_datetime = |t: git2::Time| -> Result<_> {
+            let date_time = NaiveDateTime::from_timestamp_opt(t.seconds(), 0)
+                .ok_or_else(|| anyhow!("Invalid timestamp"))?;
+            let offset = FixedOffset::east_opt(t.offset_minutes())
+                .ok_or_else(|| anyhow!("Invalid timezone"))?;
+            Ok(DateTime::<FixedOffset>::from_local(date_time, offset))
+        };
+        let author_timestamp = to_datetime(commit.author().when())
+            .context("Failed to get author timestamp")?
+            .into();
+
+        let committer_timestamp = to_datetime(commit.time())
+            .context("Failed to get committer timestamp")?
+            .into();
+
+        Ok(CommitMetadata {
+            id: oid,
+            parents,
+            author_timestamp,
+            committer_timestamp,
+        })
     }
 
     pub(crate) fn get_commit(&mut self, id: &ObjectId) -> Result<Commit> {
@@ -99,7 +138,7 @@ impl Repo {
             .ok_or_else(|| Error::msg("No metadata for commit"))?;
 
         Ok(Commit {
-            metadata: metadata.clone(),
+            metadata,
             message,
             author,
         })
@@ -160,22 +199,54 @@ impl Repo {
         &mut self,
         heads: &[ObjectId],
         sort_type: SortType,
-    ) -> Result<impl Iterator<Item = &CommitMetadata>> {
+    ) -> Result<Box<dyn Iterator<Item = &CommitMetadata> + '_>> {
         // FIXME: Fall back on libgit2 on failure
 
-        let (walked_indices, child_indices) = self.build_reverse_dag(heads)?;
+        match self.build_reverse_dag(heads) {
+            Ok((walked_indices, child_indices)) => {
+                // NOTE: From this point on it's guaranteed that all parents of heads are in our
+                // metadata_storage, so from this point on it's safe for us to use the metadata storage
+                // directly
 
-        // NOTE: From this point on it's guaranteed that all parents of heads are in our
-        // metadata_storage, so from this point on it's safe for us to use the metadata storage
-        // directly
+                Ok(Box::new(build_sorted_metadata_indicies(
+                    sort_type,
+                    &walked_indices,
+                    child_indices,
+                    &self.metadata_lookup,
+                    &self.metadata_storage,
+                )?))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to fast parse metadata iter, falling back on slow parser: {:?}",
+                    e
+                );
 
-        build_sorted_metadata_indicies(
-            sort_type,
-            &walked_indices,
-            child_indices,
-            &self.metadata_lookup,
-            &self.metadata_storage,
-        )
+                self.libgit2_storage.clear();
+
+                let mut revwalk = self
+                    .git2_repo
+                    .revwalk()
+                    .context("Failed to create repo revwalk")?;
+
+                revwalk
+                    .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+                    .context("Failed to set sort type on revwalk")?;
+
+                for head in heads {
+                    revwalk
+                        .push(head.into())
+                        .context("Failed to push head to revwalk")?;
+                }
+
+                for rev in revwalk {
+                    self.libgit2_storage
+                        .push(self.get_commit_metadata_libgit2(&rev?.into())?);
+                }
+
+                Ok(Box::new(self.libgit2_storage.iter()))
+            }
+        }
     }
 
     /// Build the reversed dag for the given heads. The output is a Vec of Vecs that represents the
@@ -853,6 +924,35 @@ mod test {
         assert_ne!(original_head.id, new_head.id);
         assert_eq!(new_head.parents.len(), 1);
         assert_eq!(new_head.parents, &[original_head.id]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_refdelta_pack() -> Result<()> {
+        const GIT_DIR_TARBALL: &[u8] =
+            include_bytes!("../../res/test/two_commits_ref_delta_pack.tar");
+
+        let git_dir = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
+
+        let mut repo = Repo::new(git_dir.path().to_path_buf())?;
+
+        let it = repo.metadata_iter(
+            &["a0dc968acca0ab483897a600b50e7b372960a509".parse()?],
+            SortType::CommitterTimestamp,
+        )?;
+
+        let commits = it.collect::<Vec<_>>();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(
+            commits[0].id,
+            "a0dc968acca0ab483897a600b50e7b372960a509".parse()?
+        );
+        assert_eq!(
+            commits[1].id,
+            "7686bd4e339afa6ef86c5638049c75e19e5a8943".parse()?
+        );
 
         Ok(())
     }
