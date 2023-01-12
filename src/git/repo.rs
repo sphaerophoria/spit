@@ -411,20 +411,28 @@ impl Repo {
         let t1 = self.git2_repo.find_commit(oid1)?.tree()?;
         let t2 = self.git2_repo.find_commit(oid2)?.tree()?;
 
+        #[derive(Hash, Eq, PartialEq)]
+        enum FileType {
+            Object(git2::Oid),
+            Commit(git2::Oid),
+        }
+
         let mut t1_files = HashMap::new();
         let mut t2_files = HashMap::new();
 
         let walk_insert_filename = |root: &str, entry: &TreeEntry, files: &mut HashMap<_, _>| {
+            let mut full_path = root.as_bytes().to_vec();
+            full_path.extend(entry.name_bytes());
             match entry.kind() {
-                Some(git2::ObjectType::Blob) => {
-                    let mut full_path = root.as_bytes().to_vec();
-                    full_path.extend(entry.name_bytes());
-                    files.insert(full_path, entry.id());
-                }
                 Some(git2::ObjectType::Tree) => {
                     return TreeWalkResult::Ok;
                 }
-                _ => unimplemented!(),
+                Some(git2::ObjectType::Commit) => {
+                    files.insert(full_path, FileType::Commit(entry.id()));
+                }
+                _ => {
+                    files.insert(full_path, FileType::Object(entry.id()));
+                }
             }
 
             TreeWalkResult::Ok
@@ -457,28 +465,47 @@ impl Repo {
             }
         }
 
-        let paths_to_contents = |oid_lookup: &HashMap<Vec<u8>, git2::Oid>| {
+        let paths_to_contents = |oid_lookup: &HashMap<Vec<u8>, FileType>| {
             changed_paths
                 .iter()
-                .map(|filename| {
+                .map(|filename| -> Result<Option<_>> {
                     let id = match oid_lookup.get(filename) {
                         Some(v) => v,
-                        None => return None,
+                        None => return Ok(None),
                     };
 
-                    let blob = match self.git2_repo.find_blob(*id) {
-                        Ok(v) => v,
-                        // FIXME: Returning None here seems wrong
-                        Err(_) => return None,
+                    let id = match id {
+                        FileType::Commit(id) => {
+                            let stringized = format!("Subproject commit {}", id);
+                            return Ok(Some(stringized.into_bytes()));
+                        }
+                        FileType::Object(id) => id,
                     };
 
-                    Some(blob.content().to_vec())
+                    let object = self
+                        .git2_repo
+                        .find_object(*id, None)
+                        .context("Failed to retrieve object")?;
+
+                    if let Some(blob) = object.as_blob() {
+                        Ok(Some(blob.content().to_vec()))
+                    } else {
+                        let description = object
+                            .describe(&git2::DescribeOptions::default())
+                            .context("Failed to generate description for object")?;
+                        let stringized = description
+                            .format(None)
+                            .context("Failed to stringize description")?;
+                        Ok(Some(stringized.into_bytes()))
+                    }
                 })
-                .collect::<Vec<Option<Vec<u8>>>>()
+                .collect::<Result<Vec<Option<Vec<u8>>>>>()
         };
 
-        let content_1 = paths_to_contents(&t1_files);
-        let content_2 = paths_to_contents(&t2_files);
+        let content_1 =
+            paths_to_contents(&t1_files).context("Failed to retrieve file content for tree 1")?;
+        let content_2 =
+            paths_to_contents(&t2_files).context("Failed to retrieve file content for tree 2")?;
         let labels = changed_paths
             .iter()
             .map(|x| String::from_utf8_lossy(x).to_string())
@@ -953,6 +980,76 @@ mod test {
             commits[1].id,
             "7686bd4e339afa6ef86c5638049c75e19e5a8943".parse()?
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_modified_files() -> Result<()> {
+        const GIT_DIR_TARBALL: &[u8] = include_bytes!("../../res/test/modified_file_test.tar");
+
+        let git_dir = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
+
+        let repo = Repo::new(git_dir.path().to_path_buf().join("repo"))?;
+
+        let modified_files = repo.modified_files(
+            &"491819c1d0e44904c905d9daac719a2eb990a5f1".parse()?,
+            &"25fa40a48f04500736c199e1b0448ca3bf2c7e52".parse()?,
+        )?;
+
+        assert_eq!(modified_files.labels.len(), 4);
+        assert!(modified_files.labels.contains(&"test.txt".to_string()));
+        assert!(modified_files.labels.contains(&"test2.txt".to_string()));
+        assert!(modified_files
+            .labels
+            .contains(&"test_binary_file".to_string()));
+        assert!(modified_files.labels.contains(&"submodule".to_string()));
+
+        let compare_content_a = |file_name, content| {
+            let position = modified_files
+                .labels
+                .iter()
+                .position(|x| x == file_name)
+                .unwrap();
+            assert_eq!(modified_files.files_a[position], content);
+        };
+
+        compare_content_a("test.txt", Some("Test text file\n".as_bytes().to_vec()));
+        compare_content_a("test2.txt", None);
+        compare_content_a(
+            "submodule",
+            Some(
+                "Subproject commit 73f89df6a3c049523eafd798092b1aaf60944ac2"
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        );
+
+        let compare_content_b = |file_name, content| {
+            let position = modified_files
+                .labels
+                .iter()
+                .position(|x| x == file_name)
+                .unwrap();
+            assert_eq!(modified_files.files_b[position], content);
+        };
+
+        compare_content_b("test.txt", None);
+        compare_content_b(
+            "test2.txt",
+            Some("Modified test text file\n".as_bytes().to_vec()),
+        );
+        compare_content_b(
+            "submodule",
+            Some(
+                "Subproject commit f4df290482ada1325c22e1907cb2bf1e7819afa7"
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        );
+
+        // No point in testing random binary data
 
         Ok(())
     }
