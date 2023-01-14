@@ -42,7 +42,6 @@ pub(crate) struct Repo {
     // metadata IDs that look up the CommitMetadata on demand.
     metadata_lookup: HashMap<ObjectId, usize>,
     metadata_storage: Vec<CommitMetadata>,
-    libgit2_storage: Vec<CommitMetadata>,
     decompressor: Decompress,
 }
 
@@ -67,18 +66,13 @@ impl Repo {
             packs,
             metadata_lookup: HashMap::new(),
             metadata_storage: Vec::new(),
-            libgit2_storage: Vec::new(),
             decompressor,
         })
     }
 
-    #[allow(unused)]
-    pub(crate) fn get_commit_metadata(&mut self, id: &ObjectId) -> Result<Option<CommitMetadata>> {
-        match self.get_commit_metadata_idx(id) {
-            Ok(Some(v)) => Ok(Some(self.metadata_storage[v].clone())),
-            Ok(None) => Ok(None),
-            Err(_) => Ok(self.get_commit_metadata_libgit2(id).ok()),
-        }
+    pub(crate) fn get_commit_metadata(&mut self, id: &ObjectId) -> Result<CommitMetadata> {
+        let idx = self.get_commit_metadata_idx(id)?;
+        Ok(self.metadata_storage[idx].clone())
     }
 
     fn get_commit_metadata_libgit2(&self, id: &ObjectId) -> Result<CommitMetadata> {
@@ -134,8 +128,7 @@ impl Repo {
 
         let metadata = self
             .get_commit_metadata(id)
-            .context("Failed to lookup commit metadata")?
-            .ok_or_else(|| Error::msg("No metadata for commit"))?;
+            .context("Failed to lookup commit metadata")?;
 
         Ok(Commit {
             metadata,
@@ -147,11 +140,11 @@ impl Repo {
     /// Private implementation of get_commit_metadata that returns the vector index instead of a
     /// reference to dodge ownership rules associated with handing out CommitMetadata references
     /// when walking our history
-    fn get_commit_metadata_idx(&mut self, id: &ObjectId) -> Result<Option<usize>> {
+    fn get_commit_metadata_idx(&mut self, id: &ObjectId) -> Result<usize> {
         // FIXME: This function does not read nicely at all...
 
         if let Some(idx) = self.metadata_lookup.get(id) {
-            return Ok(Some(*idx));
+            return Ok(*idx);
         }
 
         let mut obj_subpath = [0; 38];
@@ -173,7 +166,7 @@ impl Repo {
             self.metadata_lookup.insert(id.clone(), storage_idx);
             self.metadata_storage
                 .push(metadata.into_full_metadata(id.clone()));
-            Ok(Some(storage_idx))
+            return Ok(storage_idx);
         } else {
             for pack in &mut self.packs {
                 match pack.get_commit_metadata(id.clone()) {
@@ -181,14 +174,32 @@ impl Repo {
                         self.metadata_lookup
                             .insert(metadata.id.clone(), storage_idx);
                         self.metadata_storage.push(metadata);
-                        return Ok(Some(storage_idx));
+                        return Ok(storage_idx);
                     }
                     Ok(None) => continue,
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        warn!(
+                            "Failed to parse rev {}: {:?}. Falling back on libgit2",
+                            id, e
+                        );
+                        break;
+                    }
                 }
             }
-            Ok(None)
         }
+
+        // If at this point we still haven't found the commit, we fall back on libgit2 to do it for
+        // us
+
+        let metadata = self
+            .get_commit_metadata_libgit2(id)
+            .with_context(|| format!("Failed to use libgit2 to find id {}", id))?;
+
+        self.metadata_lookup
+            .insert(metadata.id.clone(), storage_idx);
+        self.metadata_storage.push(metadata);
+
+        Ok(storage_idx)
     }
 
     /// Build an iterator that iterates over metadatas. Items are sorted such that children are always
@@ -199,54 +210,20 @@ impl Repo {
         &mut self,
         heads: &[ObjectId],
         sort_type: SortType,
-    ) -> Result<Box<dyn Iterator<Item = &CommitMetadata> + '_>> {
-        // FIXME: Fall back on libgit2 on failure
+    ) -> Result<impl Iterator<Item = &CommitMetadata>> {
+        let (walked_indices, child_indices) = self.build_reverse_dag(heads)?;
 
-        match self.build_reverse_dag(heads) {
-            Ok((walked_indices, child_indices)) => {
-                // NOTE: From this point on it's guaranteed that all parents of heads are in our
-                // metadata_storage, so from this point on it's safe for us to use the metadata storage
-                // directly
+        // NOTE: From this point on it's guaranteed that all parents of heads are in our
+        // metadata_storage, so from this point on it's safe for us to use the metadata storage
+        // directly
 
-                Ok(Box::new(build_sorted_metadata_indicies(
-                    sort_type,
-                    &walked_indices,
-                    child_indices,
-                    &self.metadata_lookup,
-                    &self.metadata_storage,
-                )?))
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to fast parse metadata iter, falling back on slow parser: {:?}",
-                    e
-                );
-
-                self.libgit2_storage.clear();
-
-                let mut revwalk = self
-                    .git2_repo
-                    .revwalk()
-                    .context("Failed to create repo revwalk")?;
-
-                revwalk
-                    .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-                    .context("Failed to set sort type on revwalk")?;
-
-                for head in heads {
-                    revwalk
-                        .push(head.into())
-                        .context("Failed to push head to revwalk")?;
-                }
-
-                for rev in revwalk {
-                    self.libgit2_storage
-                        .push(self.get_commit_metadata_libgit2(&rev?.into())?);
-                }
-
-                Ok(Box::new(self.libgit2_storage.iter()))
-            }
-        }
+        build_sorted_metadata_indicies(
+            sort_type,
+            &walked_indices,
+            child_indices,
+            &self.metadata_lookup,
+            &self.metadata_storage,
+        )
     }
 
     /// Build the reversed dag for the given heads. The output is a Vec of Vecs that represents the
@@ -259,10 +236,7 @@ impl Repo {
 
         let mut to_walk = heads
             .iter()
-            .map(|head| -> Result<usize> {
-                self.get_commit_metadata_idx(head)?
-                    .ok_or_else(|| Error::msg("Repository does not have requested id"))
-            })
+            .map(|head| -> Result<usize> { self.get_commit_metadata_idx(head) })
             .collect::<Result<Vec<usize>>>()?;
 
         // Multiple children will have the same parent. Keep track of which indices we've walked to
@@ -280,9 +254,7 @@ impl Repo {
             let parents = self.metadata_storage[idx].parents.clone();
 
             for parent in parents {
-                let parent_idx = self
-                    .get_commit_metadata_idx(&parent)?
-                    .ok_or_else(|| Error::msg("Parent is not present"))?;
+                let parent_idx = self.get_commit_metadata_idx(&parent)?;
 
                 if child_indices.len() <= parent_idx {
                     child_indices.resize(parent_idx + 1, Vec::new());
@@ -706,9 +678,7 @@ mod test {
 
         let oid = "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?;
         let expected_parent: ObjectId = "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?;
-        let metadata = history
-            .get_commit_metadata(&oid)?
-            .expect("Expected to find commit");
+        let metadata = history.get_commit_metadata(&oid)?;
 
         assert_eq!(metadata.parents.len(), 1);
         assert_ne!(
@@ -730,9 +700,7 @@ mod test {
 
         let oid = "760e2389d32e245213eaf71d88e314fa63709c79".parse()?;
         let expected_parent: ObjectId = "54c637bcfcaab19064ac59db025bc05d941a3bf3".parse()?;
-        let metadata = history
-            .get_commit_metadata(&oid)?
-            .expect("Expected to find commit");
+        let metadata = history.get_commit_metadata(&oid)?;
 
         assert_eq!(metadata.parents.len(), 1);
         assert_ne!(
