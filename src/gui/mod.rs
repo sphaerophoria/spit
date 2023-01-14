@@ -312,6 +312,14 @@ impl GuiInner {
                         error!("Failed to request remote references: {}", e);
                     };
                 }
+                ToolbarAction::FetchAll => {
+                    if let Err(e) = self
+                        .tx
+                        .send(AppRequest::FetchAll(self.repo_state.repo.clone()))
+                    {
+                        error!("Failed to request remote references: {}", e);
+                    };
+                }
                 ToolbarAction::None => (),
             }
         });
@@ -438,6 +446,7 @@ impl App for Gui {
 enum ToolbarAction {
     OpenRepo(PathBuf),
     ShowDownloadDialog,
+    FetchAll,
     None,
 }
 
@@ -465,6 +474,10 @@ fn render_toolbar(ui: &mut egui::Ui, show_console: &mut bool) -> ToolbarAction {
 
         if ui.button("Download references").clicked() {
             ret = ToolbarAction::ShowDownloadDialog;
+        }
+
+        if ui.button("Fetch all").clicked() {
+            ret = ToolbarAction::FetchAll;
         }
     });
     ret

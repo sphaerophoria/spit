@@ -99,6 +99,7 @@ pub enum AppRequest {
         expected_repo: PathBuf,
     },
     FetchRemoteRef(PathBuf, RemoteRef),
+    FetchAll(PathBuf),
 }
 
 pub enum AppEvent {
@@ -456,6 +457,24 @@ impl App {
                     &repo_state,
                     &git::commandline::fetch_remote_ref(&remote_ref),
                 )?;
+            }
+            AppRequest::FetchAll(expected_repo) => {
+                let repo = self
+                    .repo
+                    .as_mut()
+                    .ok_or_else(|| Error::msg("Update remotes requested without valid repo"))?;
+
+                if repo.repo_root() != expected_repo {
+                    bail!(
+                        "Current repo does not match expected repo: {}, {}",
+                        repo.repo_root().display(),
+                        expected_repo.display()
+                    );
+                }
+
+                let repo_state = self.get_repo_state()?;
+
+                self.execute_command(&repo_state, git::commandline::fetch_all())?;
             }
         }
 

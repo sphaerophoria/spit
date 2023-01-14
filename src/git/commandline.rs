@@ -59,3 +59,7 @@ pub(crate) fn fetch_remote_ref(remote_ref: &RemoteRef) -> String {
         remote_escaped, ref_escaped, remote_escaped, ref_escaped
     )
 }
+
+pub(crate) fn fetch_all() -> &'static str {
+    "git fetch --all"
+}
