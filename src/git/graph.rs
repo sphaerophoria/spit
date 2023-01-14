@@ -294,7 +294,7 @@ mod tests {
             .unpack(tmp_dir.path())
             .unwrap();
 
-        let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
+        let mut repo = Repo::new(tmp_dir.path().to_path_buf(), false)?;
         let all_heads = get_all_heads(&repo)?;
         let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 3);
@@ -322,7 +322,7 @@ mod tests {
             .unpack(tmp_dir.path())
             .unwrap();
 
-        let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
+        let mut repo = Repo::new(tmp_dir.path().to_path_buf(), false)?;
         let all_heads = get_all_heads(&repo)?;
         let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 4);
@@ -351,7 +351,7 @@ mod tests {
             .unpack(tmp_dir.path())
             .unwrap();
 
-        let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
+        let mut repo = Repo::new(tmp_dir.path().to_path_buf(), false)?;
         let all_heads = get_all_heads(&repo)?;
         let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 4);
@@ -381,7 +381,7 @@ mod tests {
             .unpack(tmp_dir.path())
             .unwrap();
 
-        let mut repo = Repo::new(tmp_dir.path().to_path_buf())?;
+        let mut repo = Repo::new(tmp_dir.path().to_path_buf(), false)?;
         let all_heads = get_all_heads(&repo)?;
         let graph = build_git_history_graph(&mut repo, &all_heads, SortType::CommitterTimestamp)?;
         assert_eq!(graph.nodes.len(), 6);

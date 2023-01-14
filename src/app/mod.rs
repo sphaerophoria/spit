@@ -358,7 +358,7 @@ impl App {
                     .context("Failed to send search response")?;
             }
             AppRequest::OpenRepo(path) => {
-                let mut repo = Repo::new(path).context("Failed to load git history")?;
+                let mut repo = Repo::new(path, true).context("Failed to load git history")?;
 
                 let repo_state = get_repo_state(&mut repo)?;
 

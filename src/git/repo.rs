@@ -33,6 +33,7 @@ impl Default for SortType {
 }
 
 pub(crate) struct Repo {
+    allow_libgit2_fallback: bool,
     git2_repo: git2::Repository,
     git_dir: PathBuf,
     repo_root: PathBuf,
@@ -46,7 +47,7 @@ pub(crate) struct Repo {
 }
 
 impl Repo {
-    pub(crate) fn new(repo_root: PathBuf) -> Result<Repo> {
+    pub(crate) fn new(repo_root: PathBuf, allow_libgit2_fallback: bool) -> Result<Repo> {
         let decompressor = Decompress::new(true);
         let ceiling_dirs: &[&Path] = &[];
         let git2_repo = git2::Repository::open_ext(
@@ -60,6 +61,7 @@ impl Repo {
         let packs = find_packs(&git_dir)?;
 
         Ok(Repo {
+            allow_libgit2_fallback,
             git2_repo,
             repo_root,
             git_dir,
@@ -167,14 +169,14 @@ impl Repo {
             self.metadata_storage
                 .push(metadata.into_full_metadata(id.clone()));
             return Ok(storage_idx);
-        } else {
-            for pack in &mut self.packs {
+        }
+
+        // Double check if any new packs have been added
+        let search_packs_for_metadata = |packs: &mut [Pack]| -> Result<Option<CommitMetadata>> {
+            for pack in packs {
                 match pack.get_commit_metadata(id.clone()) {
                     Ok(Some(metadata)) => {
-                        self.metadata_lookup
-                            .insert(metadata.id.clone(), storage_idx);
-                        self.metadata_storage.push(metadata);
-                        return Ok(storage_idx);
+                        return Ok(Some(metadata));
                     }
                     Ok(None) => continue,
                     Err(e) => {
@@ -182,10 +184,36 @@ impl Repo {
                             "Failed to parse rev {}: {:?}. Falling back on libgit2",
                             id, e
                         );
-                        break;
+                        return Err(e);
                     }
                 }
             }
+            Ok(None)
+        };
+
+        let mut search_result = search_packs_for_metadata(&mut self.packs);
+        if let Ok(None) = search_result {
+            self.packs = find_packs(&self.git_dir).context("Failed to reload packs")?;
+            search_result = search_packs_for_metadata(&mut self.packs);
+        }
+
+        match search_result {
+            Ok(Some(metadata)) => {
+                self.metadata_lookup
+                    .insert(metadata.id.clone(), storage_idx);
+                self.metadata_storage.push(metadata);
+                return Ok(storage_idx);
+            }
+            Ok(None) => {
+                warn!("Failed to find rev {}", id);
+            }
+            Err(e) => {
+                warn!("Failed to parse rev {}: {:?}", id, e);
+            }
+        };
+
+        if !self.allow_libgit2_fallback {
+            return Err(anyhow!("Failed to find requested commit id: {}", id));
         }
 
         // If at this point we still haven't found the commit, we fall back on libgit2 to do it for
@@ -674,7 +702,7 @@ mod test {
             .unpack(git_dir.path())
             .unwrap();
 
-        let mut history = Repo::new(git_dir.path().to_path_buf())?;
+        let mut history = Repo::new(git_dir.path().to_path_buf(), false)?;
 
         let oid = "83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?;
         let expected_parent: ObjectId = "ce4f6371c0a653f6206e4020704674d63fc8e3d4".parse()?;
@@ -696,7 +724,7 @@ mod test {
             .unpack(git_dir.path())
             .unwrap();
 
-        let mut history = Repo::new(git_dir.path().to_path_buf())?;
+        let mut history = Repo::new(git_dir.path().to_path_buf(), false)?;
 
         let oid = "760e2389d32e245213eaf71d88e314fa63709c79".parse()?;
         let expected_parent: ObjectId = "54c637bcfcaab19064ac59db025bc05d941a3bf3".parse()?;
@@ -814,7 +842,7 @@ mod test {
             ])
             .output()?;
 
-        let repo = Repo::new(git_dir.path().to_path_buf())?;
+        let repo = Repo::new(git_dir.path().to_path_buf(), false)?;
         let mut branches = repo.branches()?.collect::<Result<Vec<_>>>()?;
         branches.sort();
 
@@ -874,7 +902,7 @@ mod test {
             ])
             .output()?;
 
-        let repo = Repo::new(git_dir.path().to_path_buf())?;
+        let repo = Repo::new(git_dir.path().to_path_buf(), false)?;
 
         let head =
             repo.find_reference_commit_id(&ReferenceId::LocalBranch("test_branch".into()))?;
@@ -894,7 +922,7 @@ mod test {
         let git_dir = TempDir::new()?;
         tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
 
-        let mut repo = Repo::new(git_dir.path().to_path_buf())?;
+        let mut repo = Repo::new(git_dir.path().to_path_buf(), false)?;
         let original_head = repo
             .metadata_iter(
                 &["83fc68fe02d76e37231b8f880bca5f151cb62e39".parse()?],
@@ -931,7 +959,8 @@ mod test {
         let git_dir = TempDir::new()?;
         tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
 
-        let mut repo = Repo::new(git_dir.path().to_path_buf())?;
+        // We allow libgit2 fallback here because our refdelta parser is not yet implemented
+        let mut repo = Repo::new(git_dir.path().to_path_buf(), true)?;
 
         let it = repo.metadata_iter(
             &["a0dc968acca0ab483897a600b50e7b372960a509".parse()?],
@@ -959,7 +988,7 @@ mod test {
         let git_dir = TempDir::new()?;
         tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
 
-        let repo = Repo::new(git_dir.path().to_path_buf().join("repo"))?;
+        let repo = Repo::new(git_dir.path().to_path_buf().join("repo"), false)?;
 
         let modified_files = repo.modified_files(
             &"491819c1d0e44904c905d9daac719a2eb990a5f1".parse()?,
@@ -1018,6 +1047,41 @@ mod test {
         );
 
         // No point in testing random binary data
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pack_reload() -> Result<()> {
+        // If we fetch more commits than fetch.unpackLimit, we may end up in a situation where
+        // metadata is not in our metadata cache, but goes directly to a new packfile that we have
+        // not parsed yet. Previously this resulted in unfindable metadata because we only looked
+        // for packfiles when we opened the git dir
+
+        const GIT_DIR_TARBALL: &[u8] = include_bytes!("../../res/test/test_pack_reload.tar");
+
+        let git_dir = TempDir::new()?;
+        tar::Archive::new(GIT_DIR_TARBALL).unpack(git_dir.path())?;
+
+        let git_dir = git_dir.path().to_path_buf().join("child_repo");
+
+        let mut repo = Repo::new(git_dir.clone(), false)?;
+
+        Command::new("git")
+            .current_dir(&git_dir)
+            .arg("fetch")
+            .arg("--all")
+            .output()?;
+
+        let origin_master =
+            repo.find_reference_commit_id(&ReferenceId::RemoteBranch("origin/master".to_string()))?;
+
+        let commits = repo
+            .metadata_iter(&[origin_master], SortType::CommitterTimestamp)?
+            .collect::<Vec<_>>();
+        assert_eq!(commits.len(), 7);
+        let first_commit = commits[0].clone();
+        repo.get_commit(&first_commit.id)?;
 
         Ok(())
     }
