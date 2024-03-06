@@ -3,8 +3,8 @@ mod priority_queue;
 use crate::{
     app::priority_queue::PriorityQueue,
     git::{
-        self, build_git_history_graph, Commit, Diff, HistoryGraph, Identifier, ModifiedFiles,
-        ObjectId, Reference, ReferenceId, RemoteRef, Repo, SortType,
+        self, build_git_history_graph, Commit, Diff, DiffTarget, HistoryGraph, Identifier,
+        ModifiedFiles, ObjectId, Reference, ReferenceId, RemoteRef, Repo, SortType,
     },
 };
 
@@ -14,7 +14,7 @@ use notify::{self, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use spiff::{DiffCollectionProcessor, DiffOptions};
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     pin::Pin,
@@ -30,11 +30,28 @@ pub struct RemoteState {
     pub(crate) references: Vec<RemoteRef>,
 }
 
+#[derive(Debug, Default, Eq, PartialEq, Clone)]
+pub(crate) struct IndexState {
+    pub(crate) files: HashMap<PathBuf, ObjectId>,
+}
+
 #[derive(Clone, Eq, PartialEq, Default)]
 pub struct RepoState {
     pub(crate) repo: PathBuf,
+    pub(crate) index: IndexState,
     pub(crate) head: ReferenceId,
     pub(crate) references: Vec<Reference>,
+}
+
+impl RepoState {
+    pub(crate) fn head_object_id(&self) -> ObjectId {
+        for reference in &self.references {
+            if reference.id == self.head {
+                return reference.head.clone();
+            }
+        }
+        panic!("did not find object id for head");
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -78,8 +95,8 @@ pub enum AppRequest {
     },
     GetDiff {
         expected_repo: PathBuf,
-        from: ObjectId,
-        to: ObjectId,
+        from: DiffTarget,
+        to: DiffTarget,
         options: DiffOptions,
         search_query: String,
     },
@@ -277,10 +294,23 @@ impl App {
 
                 if self.processor.as_ref().map(|x| &x.data.id_a) != Some(&from)
                     || self.processor.as_ref().map(|x| &x.data.id_b) != Some(&to)
+                    // Index is malleable, there is not a single identifier like for objects. We
+                    // could cache the list of object IDs for all items in the index, however this
+                    // doesn't seem worth it when we can just refresh it
+                    || from == DiffTarget::Index
+                    || to == DiffTarget::Index
                 {
-                    let modified_files = repo
-                        .modified_files(&from, &to)
-                        .context("Failed to retrieve modified files")?;
+                    let modified_files = match (&from, &to) {
+                        (DiffTarget::Object(a), DiffTarget::Object(b)) => repo
+                            .modified_files(a, b)
+                            .context("Failed to retrieve modified files")?,
+                        (DiffTarget::Object(a), DiffTarget::Index) => repo
+                            .modified_files_with_index(a)
+                            .context("Failed to retrieve modified files")?,
+                        _ => {
+                            bail!("Unsupported diff target combination");
+                        }
+                    };
 
                     self.processor = Some(Box::pin(DiffProcessorWithData {
                         data: modified_files,
@@ -496,10 +526,12 @@ fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
     let mut references = branches.into_iter().collect::<Result<Vec<_>>>()?;
     let head = repo.resolve_reference(&ReferenceId::head())?;
     let tags = repo.tags().context("Failed to retrieve tags")?;
+    let index = repo.index().context("failed to retrieve index")?;
     references.extend(tags);
 
     Ok(RepoState {
         repo: repo.repo_root().to_path_buf(),
+        index,
         head,
         references,
     })
@@ -594,6 +626,7 @@ mod test {
 
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
+            index: Default::default(),
             head: ReferenceId::Unknown,
             references: vec![
                 Reference {
@@ -627,6 +660,7 @@ mod test {
 
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
+            index: Default::default(),
             head: ReferenceId::Unknown,
             references: vec![Reference {
                 id: ReferenceId::head(),
@@ -651,6 +685,7 @@ mod test {
 
         view_state.update_with_repo_state(&RepoState {
             repo: PathBuf::new(),
+            index: Default::default(),
             head: ReferenceId::Unknown,
             references: vec![Reference {
                 id: ReferenceId::head(),

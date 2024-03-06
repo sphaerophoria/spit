@@ -7,7 +7,7 @@ mod tristate_checkbox;
 
 pub use editor::Editor;
 
-use commit_log::CommitLog;
+use commit_log::{CommitLog, SelectedItem};
 use commit_view::{CommitView, CommitViewAction};
 use download_dialog::DownloadDialog;
 use sidebar::{Sidebar, SidebarAction};
@@ -132,6 +132,8 @@ impl GuiInner {
                 self.view_state.update_with_repo_state(&repo_state);
                 self.sidebar.update_with_repo_state(Arc::clone(&repo_state));
                 self.commit_log
+                    .update_with_repo_state(Arc::clone(&repo_state));
+                self.commit_view
                     .update_with_repo_state(Arc::clone(&repo_state));
 
                 if repo_state.repo != self.repo_state.repo {
@@ -264,8 +266,8 @@ impl GuiInner {
 
     fn ensure_selected_commit_in_cache(&mut self) -> Result<()> {
         let selected_commit = match self.commit_log.selected_commit() {
-            Some(v) => v,
-            None => return Ok(()),
+            SelectedItem::Object(v) => v,
+            SelectedItem::Index | SelectedItem::None => return Ok(()),
         };
 
         self.commit_cache.pin(selected_commit.clone());

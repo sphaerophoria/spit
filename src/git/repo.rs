@@ -1,7 +1,8 @@
 use crate::{
+    app::IndexState,
     git::{
-        decompress, pack::Pack, Commit, CommitMetadata, ModifiedFiles, ObjectId, Reference,
-        ReferenceId, RemoteRef,
+        decompress, pack::Pack, Commit, CommitMetadata, DiffTarget, ModifiedFiles, ObjectId,
+        Reference, ReferenceId, RemoteRef,
     },
     util::Timer,
 };
@@ -297,6 +298,19 @@ impl Repo {
         Ok((walked, child_indices))
     }
 
+    pub(crate) fn index(&self) -> Result<IndexState> {
+        let mut index = self.git2_repo.index().context("failed to get index")?;
+        index.read(false).context("failed to refresh index")?;
+        let mut files = HashMap::new();
+        for entry in index.iter() {
+            let path_s =
+                String::from_utf8(entry.path).context("index entry does not have utf8 path")?;
+            files.insert(path_s.into(), entry.id.into());
+        }
+
+        Ok(IndexState { files })
+    }
+
     pub(crate) fn branches(&self) -> Result<impl Iterator<Item = Result<Reference>> + '_> {
         Ok(self
             .git2_repo
@@ -402,119 +416,33 @@ impl Repo {
     }
 
     pub(crate) fn modified_files(&self, id1: &ObjectId, id2: &ObjectId) -> Result<ModifiedFiles> {
-        let oid1 = id1.into();
-        let oid2 = id2.into();
+        let t1_files =
+            object_id_to_file_list(&self.git2_repo, id1).context("failed to get files for id1")?;
+        let t2_files =
+            object_id_to_file_list(&self.git2_repo, id2).context("failed to get files for id2")?;
 
-        let t1 = self.git2_repo.find_commit(oid1)?.tree()?;
-        let t2 = self.git2_repo.find_commit(oid2)?.tree()?;
+        modified_files_between_trees(
+            &self.git2_repo,
+            DiffTarget::Object(id1.clone()),
+            DiffTarget::Object(id2.clone()),
+            &t1_files,
+            &t2_files,
+        )
+    }
 
-        #[derive(Hash, Eq, PartialEq)]
-        enum FileType {
-            Object(git2::Oid),
-            Commit(git2::Oid),
-        }
+    pub(crate) fn modified_files_with_index(&self, id: &ObjectId) -> Result<ModifiedFiles> {
+        let index_files =
+            index_file_list(&self.git2_repo).context("failed to get files for index")?;
+        let object_files = object_id_to_file_list(&self.git2_repo, id)
+            .context("failed to get files for object")?;
 
-        let mut t1_files = HashMap::new();
-        let mut t2_files = HashMap::new();
-
-        let walk_insert_filename = |root: &str, entry: &TreeEntry, files: &mut HashMap<_, _>| {
-            let mut full_path = root.as_bytes().to_vec();
-            full_path.extend(entry.name_bytes());
-            match entry.kind() {
-                Some(git2::ObjectType::Tree) => {
-                    return TreeWalkResult::Ok;
-                }
-                Some(git2::ObjectType::Commit) => {
-                    files.insert(full_path, FileType::Commit(entry.id()));
-                }
-                _ => {
-                    files.insert(full_path, FileType::Object(entry.id()));
-                }
-            }
-
-            TreeWalkResult::Ok
-        };
-
-        t1.walk(TreeWalkMode::PreOrder, |root, entry| {
-            walk_insert_filename(root, entry, &mut t1_files)
-        })
-        .context("Failed to walk tree 1")?;
-
-        t2.walk(TreeWalkMode::PreOrder, |root, entry| {
-            walk_insert_filename(root, entry, &mut t2_files)
-        })
-        .context("Failed to walk tree 2")?;
-
-        let mut changed_paths = t1_files
-            .iter()
-            .filter_map(|(path, id)| {
-                if t2_files.get(path) == Some(id) {
-                    None
-                } else {
-                    Some(path.clone())
-                }
-            })
-            .collect::<BTreeSet<Vec<u8>>>();
-
-        for (path, id) in t2_files.iter() {
-            if t1_files.get(path) != Some(id) {
-                changed_paths.insert(path.clone());
-            }
-        }
-
-        let paths_to_contents = |oid_lookup: &HashMap<Vec<u8>, FileType>| {
-            changed_paths
-                .iter()
-                .map(|filename| -> Result<Option<_>> {
-                    let id = match oid_lookup.get(filename) {
-                        Some(v) => v,
-                        None => return Ok(None),
-                    };
-
-                    let id = match id {
-                        FileType::Commit(id) => {
-                            let stringized = format!("Subproject commit {}", id);
-                            return Ok(Some(stringized.into_bytes()));
-                        }
-                        FileType::Object(id) => id,
-                    };
-
-                    let object = self
-                        .git2_repo
-                        .find_object(*id, None)
-                        .context("Failed to retrieve object")?;
-
-                    if let Some(blob) = object.as_blob() {
-                        Ok(Some(blob.content().to_vec()))
-                    } else {
-                        let description = object
-                            .describe(&git2::DescribeOptions::default())
-                            .context("Failed to generate description for object")?;
-                        let stringized = description
-                            .format(None)
-                            .context("Failed to stringize description")?;
-                        Ok(Some(stringized.into_bytes()))
-                    }
-                })
-                .collect::<Result<Vec<Option<Vec<u8>>>>>()
-        };
-
-        let content_1 =
-            paths_to_contents(&t1_files).context("Failed to retrieve file content for tree 1")?;
-        let content_2 =
-            paths_to_contents(&t2_files).context("Failed to retrieve file content for tree 2")?;
-        let labels = changed_paths
-            .iter()
-            .map(|x| String::from_utf8_lossy(x).to_string())
-            .collect::<Vec<_>>();
-
-        Ok(ModifiedFiles {
-            id_a: id1.clone(),
-            id_b: id2.clone(),
-            files_a: content_1,
-            files_b: content_2,
-            labels,
-        })
+        modified_files_between_trees(
+            &self.git2_repo,
+            DiffTarget::Index,
+            DiffTarget::Object(id.clone()),
+            &index_files,
+            &object_files,
+        )
     }
 }
 
@@ -682,6 +610,139 @@ fn find_packs(git_dir: &Path) -> Result<Vec<Pack>> {
         .into_iter()
         .map(|p| Pack::new(&p))
         .collect()
+}
+
+#[derive(Hash, Eq, PartialEq)]
+enum FileListItem {
+    Object(git2::Oid),
+    Commit(git2::Oid),
+}
+
+fn index_file_list(git2_repo: &git2::Repository) -> Result<HashMap<Vec<u8>, FileListItem>> {
+    let mut ret = HashMap::new();
+    let mut index = git2_repo.index().context("failed to get index")?;
+    index.read(false).unwrap();
+    for entry in index.iter() {
+        let id = entry.id;
+        let path = entry.path;
+        // FIXME: Check object type (i.e. tree, commit, submodule, etc.) like in
+        // object_id_to_file_list
+        ret.insert(path, FileListItem::Object(id));
+    }
+
+    Ok(ret)
+}
+
+fn object_id_to_file_list(
+    git2_repo: &git2::Repository,
+    id: &ObjectId,
+) -> Result<HashMap<Vec<u8>, FileListItem>> {
+    let oid1 = id.into();
+    let tree = git2_repo.find_commit(oid1)?.tree()?;
+    let mut ret = HashMap::new();
+
+    let walk_insert_filename = |root: &str, entry: &TreeEntry, files: &mut HashMap<_, _>| {
+        let mut full_path = root.as_bytes().to_vec();
+        full_path.extend(entry.name_bytes());
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                return TreeWalkResult::Ok;
+            }
+            Some(git2::ObjectType::Commit) => {
+                files.insert(full_path, FileListItem::Commit(entry.id()));
+            }
+            _ => {
+                files.insert(full_path, FileListItem::Object(entry.id()));
+            }
+        }
+
+        TreeWalkResult::Ok
+    };
+
+    tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+        walk_insert_filename(root, entry, &mut ret)
+    })
+    .context("Failed to walk tree 1")?;
+
+    Ok(ret)
+}
+
+fn modified_files_between_trees(
+    git2_repo: &git2::Repository,
+    id1: DiffTarget,
+    id2: DiffTarget,
+    t1_files: &HashMap<Vec<u8>, FileListItem>,
+    t2_files: &HashMap<Vec<u8>, FileListItem>,
+) -> Result<ModifiedFiles> {
+    let mut changed_paths = t1_files
+        .iter()
+        .filter_map(|(path, id)| {
+            if t2_files.get(path) == Some(id) {
+                None
+            } else {
+                Some(path.clone())
+            }
+        })
+        .collect::<BTreeSet<Vec<u8>>>();
+
+    for (path, id) in t2_files.iter() {
+        if t1_files.get(path) != Some(id) {
+            changed_paths.insert(path.clone());
+        }
+    }
+
+    let paths_to_contents = |oid_lookup: &HashMap<Vec<u8>, FileListItem>| {
+        changed_paths
+            .iter()
+            .map(|filename| -> Result<Option<_>> {
+                let id = match oid_lookup.get(filename) {
+                    Some(v) => v,
+                    None => return Ok(None),
+                };
+
+                let id = match id {
+                    FileListItem::Commit(id) => {
+                        let stringized = format!("Subproject commit {}", id);
+                        return Ok(Some(stringized.into_bytes()));
+                    }
+                    FileListItem::Object(id) => id,
+                };
+
+                let object = git2_repo
+                    .find_object(*id, None)
+                    .context("Failed to retrieve object")?;
+
+                if let Some(blob) = object.as_blob() {
+                    Ok(Some(blob.content().to_vec()))
+                } else {
+                    let description = object
+                        .describe(&git2::DescribeOptions::default())
+                        .context("Failed to generate description for object")?;
+                    let stringized = description
+                        .format(None)
+                        .context("Failed to stringize description")?;
+                    Ok(Some(stringized.into_bytes()))
+                }
+            })
+            .collect::<Result<Vec<Option<Vec<u8>>>>>()
+    };
+
+    let content_1 =
+        paths_to_contents(t1_files).context("Failed to retrieve file content for tree 1")?;
+    let content_2 =
+        paths_to_contents(t2_files).context("Failed to retrieve file content for tree 2")?;
+    let labels = changed_paths
+        .iter()
+        .map(|x| String::from_utf8_lossy(x).to_string())
+        .collect::<Vec<_>>();
+
+    Ok(ModifiedFiles {
+        id_a: id1,
+        id_b: id2,
+        files_a: content_1,
+        files_b: content_2,
+        labels,
+    })
 }
 
 #[cfg(test)]

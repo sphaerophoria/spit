@@ -14,6 +14,21 @@ use chrono::{DateTime, Utc};
 use spiff::{DiffOptions, ProcessedDiffCollection};
 use std::{fmt, path::PathBuf};
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub enum DiffTarget {
+    Index,
+    Object(ObjectId),
+}
+
+impl fmt::Display for DiffTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DiffTarget::Index => write!(f, "index"),
+            DiffTarget::Object(id) => write!(f, "{}", id),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CommitMetadata {
     pub(crate) id: ObjectId,
@@ -196,8 +211,8 @@ impl fmt::Display for DiffFileHeader {
 
 #[derive(PartialEq, Eq, Hash)]
 pub struct DiffMetadata {
-    pub(crate) from: ObjectId,
-    pub(crate) to: ObjectId,
+    pub(crate) from: DiffTarget,
+    pub(crate) to: DiffTarget,
     pub(crate) options: DiffOptions,
 }
 
@@ -209,8 +224,8 @@ pub struct Diff {
 }
 
 pub struct ModifiedFiles {
-    pub(crate) id_a: ObjectId,
-    pub(crate) id_b: ObjectId,
+    pub(crate) id_a: DiffTarget,
+    pub(crate) id_b: DiffTarget,
     pub(crate) files_a: Vec<Option<Vec<u8>>>,
     pub(crate) files_b: Vec<Option<Vec<u8>>>,
     pub(crate) labels: Vec<String>,
