@@ -2,7 +2,7 @@ use anyhow::Result;
 use eframe::{
     egui::{
         self, text::LayoutJob, Align, CentralPanel, Color32, ComboBox, FontId, Galley, Layout,
-        ScrollArea, TextEdit, TextFormat, TextStyle, TopBottomPanel, Ui, Visuals,
+        ScrollArea, TextEdit, TextFormat, TextStyle, TopBottomPanel, Ui, ViewportCommand, Visuals,
     },
     App, CreationContext,
 };
@@ -88,11 +88,11 @@ impl App for Editor {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Finish").clicked() {
                     self.should_save = true;
-                    frame.close();
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
 
                 if ui.button("Cancel").clicked() {
-                    frame.close();
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
             });
         });
@@ -214,5 +214,5 @@ fn highlight(ui: &Ui, s: &str, wrap_width: f32, editor_type: &EditorType) -> Arc
         EditorType::Unknown => LayoutJob::single_section(s.to_string(), default_textformat(ui)),
     };
     layout_job.wrap.max_width = wrap_width;
-    ui.fonts().layout_job(layout_job)
+    ui.fonts(|f| f.layout_job(layout_job))
 }

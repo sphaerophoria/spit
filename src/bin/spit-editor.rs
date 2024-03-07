@@ -13,7 +13,8 @@ fn main() -> Result<()> {
         "Spit editor",
         Default::default(),
         Box::new(move |cc| Box::new(Editor::new(&filename, cc).unwrap())),
-    );
+    )
+    .expect("failed to create ui");
 
     Ok(())
 }

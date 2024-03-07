@@ -71,6 +71,8 @@ impl<'a> Widget for TristateCheckbox<'a> {
                 rect: big_icon_rect.expand(visuals.expansion),
                 rounding: visuals.rounding,
                 fill: visuals.bg_fill,
+                fill_texture_id: Default::default(),
+                uv: epaint::Rect::ZERO,
                 stroke: visuals.bg_stroke,
             });
 
@@ -94,7 +96,7 @@ impl<'a> Widget for TristateCheckbox<'a> {
                 ));
             }
 
-            text.paint_with_visuals(ui.painter(), text_pos, visuals);
+            ui.painter().galley(text_pos, text, visuals.text_color());
         }
 
         response

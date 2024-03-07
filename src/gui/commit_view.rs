@@ -3,9 +3,9 @@ use crate::{
     util::Cache,
 };
 
-use eframe::egui::{TextEdit, TextStyle, Ui, Widget};
+use eframe::egui::{ScrollArea, TextEdit, TextStyle, Ui, Widget};
 
-use spiff::widget::{self as spiff_widget, DiffViewAction};
+use spiff::widget::{self as spiff_widget, search_bar_wrapped, SearchBar, SearchBarAction};
 use spiff::DiffOptions;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +32,7 @@ pub(super) struct CommitView {
     last_requested_diff: Option<DiffRequest>,
     diff_options: DiffOptions,
     diff_view: Option<spiff_widget::DiffView>,
+    search_bar: SearchBar,
     search_query: String,
 }
 
@@ -47,9 +48,9 @@ impl CommitView {
 
     pub(super) fn update_diff(&mut self, diff: Diff) {
         if let Some(diff_view) = &mut self.diff_view {
-            diff_view.update_data(diff.diff);
+            diff_view.update_data(diff.diff.processed_diffs);
         } else {
-            self.diff_view = Some(spiff_widget::DiffView::new(diff.diff));
+            self.diff_view = Some(spiff_widget::DiffView::new(diff.diff.processed_diffs));
         }
     }
 
@@ -76,18 +77,23 @@ impl CommitView {
         };
 
         if let Some(diff_view) = &mut self.diff_view {
-            match diff_view.show_with_additional_content(ui, force_open, |ui| {
-                let message = gen_commit_header(selected_commit, cached_commits);
-                TextEdit::multiline(&mut message.as_str())
-                    .font(TextStyle::Monospace)
-                    .desired_width(ui.available_width())
-                    .ui(ui);
-            }) {
-                DiffViewAction::UpdateSearch(s) => {
-                    self.search_query = s;
+            ScrollArea::vertical().show(ui, |ui| {
+                match search_bar_wrapped(&mut self.search_bar, ui, |ui, jump_idx| {
+                    let message = gen_commit_header(selected_commit, cached_commits);
+                    TextEdit::multiline(&mut message.as_str())
+                        .font(TextStyle::Monospace)
+                        .desired_width(ui.available_width())
+                        .ui(ui);
+                    diff_view.show(ui, jump_idx, force_open);
+                })
+                .action
+                {
+                    SearchBarAction::UpdateSearch(s) => {
+                        self.search_query = s;
+                    }
+                    SearchBarAction::Jump | SearchBarAction::None => (),
                 }
-                DiffViewAction::None => (),
-            }
+            });
         }
 
         let request = construct_diff_request(

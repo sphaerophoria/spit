@@ -116,7 +116,7 @@ fn render_commit_message(ui: &mut Ui, message: LayoutJob, selected: bool) -> Res
             .rect_stroke(message_response.rect, visuals.rounding, visuals.bg_stroke);
     }
 
-    galley.paint_with_visuals(ui.painter(), pos, ui.visuals().noninteractive());
+    ui.painter().galley(pos, galley, ui.visuals().text_color());
 
     message_response
 }

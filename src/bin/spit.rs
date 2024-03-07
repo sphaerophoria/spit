@@ -15,7 +15,10 @@ fn main() -> Result<()> {
     };
 
     let native_options = eframe::NativeOptions {
-        maximized: true,
+        viewport: eframe::egui::viewport::ViewportBuilder {
+            maximized: Some(true),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -32,7 +35,8 @@ fn main() -> Result<()> {
         "Spit",
         native_options,
         Box::new(move |cc| Box::new(Gui::new(app_request_tx, app_response_rx, cc).unwrap())),
-    );
+    )
+    .expect("failed to create ui");
 
     Ok(())
 }

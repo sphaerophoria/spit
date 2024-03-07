@@ -6,24 +6,24 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.56"
-chrono = "0.4.19"
-eframe = "0.20.1"
-env_logger = "0.9.0"
-faster-hex = "0.6.1"
-flate2 = { version = "1.0.22", features = ["zlib"], default-features = false }
-memmap2 = "0.5.3"
-log = "0.4.16"
-git2 = "0.14.2"
-rfd = "0.8.1"
-notify = "4.0.17"
+anyhow = "1.0.80"
+chrono = "0.4.35"
+eframe = "0.26.2"
+env_logger = "0.11.3"
+faster-hex = "0.9.0"
+flate2 = { version = "1.0.28", features = ["zlib"], default-features = false }
+memmap2 = "0.9.4"
+log = "0.4.21"
+git2 = "0.18.2"
+rfd = "0.14.0"
+notify = "6.1.1"
 shell-escape = "0.1.5"
 clipboard = "0.5.0"
-spiff = { git = "https://github.com/sphaerophoria/spiff",  rev = "c699e2a54703cbd968de5e9655bfc14dc81f365c"}
+spiff = { git = "https://github.com/sphaerophoria/spiff", rev = "4e990c52ba45c15d6fe85065f6c21df800ebdb09" }
 
 [dev-dependencies]
-tempfile = "3.3.0"
-tar = "0.4.38"
+tempfile = "3.10.1"
+tar = "0.4.40"
 
 [profile.release]
 debug = true

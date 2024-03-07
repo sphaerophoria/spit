@@ -10,7 +10,7 @@ use crate::{
 
 use anyhow::{bail, Context, Error, Result};
 use log::{debug, error, info};
-use notify::{self, RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{self, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use spiff::{DiffCollectionProcessor, DiffOptions};
 
 use std::{
@@ -505,12 +505,7 @@ fn get_repo_state(repo: &mut Repo) -> Result<RepoState> {
     })
 }
 
-fn path_is_lock_file(path: Option<&Path>) -> bool {
-    let path = match path {
-        Some(p) => p,
-        None => return false,
-    };
-
+fn path_is_lock_file(path: &Path) -> bool {
     let extension = match path.extension() {
         Some(e) => e,
         None => return false,
@@ -519,7 +514,7 @@ fn path_is_lock_file(path: Option<&Path>) -> bool {
     extension == OsStr::new("lock")
 }
 
-fn debounce_event(notifier_rx: &Receiver<RawEvent>) {
+fn debounce_event(notifier_rx: &Receiver<Result<Event, notify::Error>>) {
     let debounce_max = Instant::now() + Duration::from_secs(2);
     let debounce_period = Duration::from_millis(500);
 
@@ -532,10 +527,18 @@ fn debounce_event(notifier_rx: &Receiver<RawEvent>) {
 
 fn spawn_watcher(app_tx: Sender<AppRequest>) -> Result<RecommendedWatcher> {
     let (notifier_tx, notifier_rx) = mpsc::channel();
-    let notifier = notify::raw_watcher(notifier_tx)?;
+    let notifier = notify::recommended_watcher(notifier_tx)?;
     thread::spawn(move || {
         while let Ok(event) = notifier_rx.recv() {
-            if path_is_lock_file(event.path.as_deref()) {
+            let event = match event {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("failed to read event: {e}");
+                    continue;
+                }
+            };
+
+            if event.paths.iter().all(|p| path_is_lock_file(p)) {
                 continue;
             }
 
@@ -569,14 +572,13 @@ mod test {
 
     #[test]
     fn test_lock_file_check() {
-        assert_eq!(path_is_lock_file(None), false);
-        assert_eq!(path_is_lock_file(Some(&Path::new("test.test"))), false);
-        assert_eq!(path_is_lock_file(Some(&Path::new("test.lock"))), true);
+        assert_eq!(path_is_lock_file(&Path::new("test.test")), false);
+        assert_eq!(path_is_lock_file(&Path::new("test.lock")), true);
         // I don't know what I think this should be, but lets at least prove that we know how it
         // works
-        assert_eq!(path_is_lock_file(Some(&Path::new(".lock"))), false);
-        assert_eq!(path_is_lock_file(Some(&Path::new("lock"))), false);
-        assert_eq!(path_is_lock_file(Some(&Path::new("test/test.lock"))), true);
+        assert_eq!(path_is_lock_file(&Path::new(".lock")), false);
+        assert_eq!(path_is_lock_file(&Path::new("lock")), false);
+        assert_eq!(path_is_lock_file(&Path::new("test/test.lock")), true);
     }
 
     #[test]
