@@ -22,19 +22,14 @@ pub(crate) struct CommitMetadata {
     pub(crate) committer_timestamp: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReferenceId {
     Symbolic(String),
     LocalBranch(String),
     RemoteBranch(String),
     Tag(String),
+    #[default]
     Unknown,
-}
-
-impl Default for ReferenceId {
-    fn default() -> Self {
-        ReferenceId::Unknown
-    }
 }
 
 impl ReferenceId {

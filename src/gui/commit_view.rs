@@ -78,7 +78,7 @@ impl CommitView {
 
         if let Some(diff_view) = &mut self.diff_view {
             ScrollArea::vertical().show(ui, |ui| {
-                match search_bar_wrapped(&mut self.search_bar, ui, |ui, jump_idx| {
+                let action = search_bar_wrapped(&mut self.search_bar, ui, |ui, jump_idx| {
                     let message = gen_commit_header(selected_commit, cached_commits);
                     TextEdit::multiline(&mut message.as_str())
                         .font(TextStyle::Monospace)
@@ -86,8 +86,8 @@ impl CommitView {
                         .ui(ui);
                     diff_view.show(ui, jump_idx, force_open);
                 })
-                .action
-                {
+                .action;
+                match action {
                     SearchBarAction::UpdateSearch(s) => {
                         self.search_query = s;
                     }
@@ -124,7 +124,7 @@ fn construct_diff_request(
         None => return None,
     };
 
-    let parent = match commit.metadata.parents.get(0) {
+    let parent = match commit.metadata.parents.first() {
         // FIXME: Choose which parent to diff to
         // FIXME: Support initial commit
         // FIXME: Support range of commits
@@ -161,5 +161,5 @@ fn gen_commit_header(
                 commit.message
             )
         })
-        .unwrap_or_else(String::new)
+        .unwrap_or_default()
 }

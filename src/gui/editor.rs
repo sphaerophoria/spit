@@ -41,7 +41,7 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(filename: &str, cc: &CreationContext<'_>) -> Result<Editor> {
-        let filename: PathBuf = filename.try_into()?;
+        let filename: PathBuf = filename.into();
         let content = load_content(&filename)?;
         let should_save = false;
         let editor_type = detect_type(&filename);
@@ -58,7 +58,7 @@ impl Editor {
 }
 
 impl App for Editor {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut reload = false;
 
         TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -68,7 +68,7 @@ impl App for Editor {
                 }
 
                 ComboBox::from_label("Editor Type")
-                    .selected_text(&self.editor_type.to_string())
+                    .selected_text(self.editor_type.to_string())
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.editor_type,

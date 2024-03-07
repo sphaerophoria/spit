@@ -381,8 +381,7 @@ impl PackData {
 
                 while let Some((patch_loc, patch_size)) = patch_stack.pop() {
                     decompressor.reset(true);
-                    let mut patch_data = Vec::new();
-                    patch_data.reserve(patch_size);
+                    let mut patch_data = Vec::with_capacity(patch_size);
                     decompressor
                         .decompress_vec(
                             &self.data[patch_loc..],

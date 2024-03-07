@@ -20,16 +20,11 @@ use std::{
     process::Command,
 };
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub enum SortType {
     AuthorTimestamp,
+    #[default]
     CommitterTimestamp,
-}
-
-impl Default for SortType {
-    fn default() -> SortType {
-        SortType::CommitterTimestamp
-    }
 }
 
 pub(crate) struct Repo {
@@ -89,10 +84,12 @@ impl Repo {
             .map(|p| ObjectId::from(p.id()))
             .collect::<Vec<_>>();
         let to_datetime = |t: git2::Time| -> Result<_> {
+            #[allow(deprecated)]
             let date_time = NaiveDateTime::from_timestamp_opt(t.seconds(), 0)
                 .ok_or_else(|| anyhow!("Invalid timestamp"))?;
             let offset = FixedOffset::east_opt(t.offset_minutes())
                 .ok_or_else(|| anyhow!("Invalid timezone"))?;
+            #[allow(deprecated)]
             Ok(DateTime::<FixedOffset>::from_local(date_time, offset))
         };
         let author_timestamp = to_datetime(commit.author().when())
