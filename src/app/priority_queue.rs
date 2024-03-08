@@ -69,7 +69,7 @@ mod test {
         let mut q = PriorityQueue::new(rx);
 
         tx.send(AppRequest::OpenRepo("1".into()))?;
-        tx.send(AppRequest::Refresh)?;
+        tx.send(AppRequest::Refresh { paths: vec![] })?;
         tx.send(AppRequest::GetCommitGraph {
             expected_repo: "1".into(),
             viewer_id: "Viewer_1".into(),
@@ -77,7 +77,7 @@ mod test {
         })?;
 
         assert!(is_enum_variant!(q.recv()?, AppRequest::OpenRepo(_)));
-        assert!(is_enum_variant!(q.recv()?, AppRequest::Refresh));
+        assert!(is_enum_variant!(q.recv()?, AppRequest::Refresh { .. }));
         assert!(is_enum_variant!(
             q.recv()?,
             AppRequest::GetCommitGraph { .. }

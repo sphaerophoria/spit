@@ -16,6 +16,7 @@ use spiff::{DiffCollectionProcessor, DiffOptions};
 use std::{
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
+    fmt,
     path::{Path, PathBuf},
     pin::Pin,
     process::Command,
@@ -88,7 +89,9 @@ pub enum AppRequest {
         viewer_id: String,
         view_state: ViewState,
     },
-    Refresh,
+    Refresh {
+        paths: Vec<PathBuf>,
+    },
     GetCommit {
         expected_repo: PathBuf,
         id: ObjectId,
@@ -119,9 +122,62 @@ pub enum AppRequest {
     FetchAll(PathBuf),
 }
 
+impl fmt::Debug for AppRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppRequest::OpenRepo(_) => {
+                write!(f, "OpenRepo")
+            }
+            AppRequest::GetCommitGraph { .. } => {
+                write!(f, "GetCommitGraph")
+            }
+            AppRequest::Refresh { .. } => {
+                write!(f, "Refresh")
+            }
+            AppRequest::GetCommit { .. } => {
+                write!(f, "GetCommit")
+            }
+            AppRequest::GetDiff { .. } => {
+                write!(f, "GetDiff")
+            }
+            AppRequest::Search { .. } => {
+                write!(f, "Search")
+            }
+            AppRequest::Checkout(_, _) => {
+                write!(f, "Checkout")
+            }
+            AppRequest::Delete(_, _) => {
+                write!(f, "Delete")
+            }
+            AppRequest::CherryPick(_, _) => {
+                write!(f, "CherryPick")
+            }
+            AppRequest::DiffTool(_) => {
+                write!(f, "DiffTool")
+            }
+            AppRequest::Merge(_, _) => {
+                write!(f, "Merge")
+            }
+            AppRequest::ExecuteGitCommand(_, _) => {
+                write!(f, "ExecuteGitCommand")
+            }
+            AppRequest::UpdateRemotes { .. } => {
+                write!(f, "UpdateRemotes")
+            }
+            AppRequest::FetchRemoteRef(_, _) => {
+                write!(f, "FetchRemoteRef")
+            }
+            AppRequest::FetchAll(_) => {
+                write!(f, "FetchAll")
+            }
+        }
+    }
+}
+
 pub enum AppEvent {
     OutputLogged(String),
     RepoStateUpdated(RepoState),
+    WorkdirUpdated,
     RemoteStateUpdated(RemoteState),
     CommitGraphFetched(ViewState, HistoryGraph),
     CommitFetched {
@@ -137,6 +193,40 @@ pub enum AppEvent {
         matched_id: Option<ObjectId>,
     },
     Error(String),
+}
+
+impl fmt::Debug for AppEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppEvent::OutputLogged(_) => {
+                write!(f, "OutputLogged")
+            }
+            AppEvent::RepoStateUpdated(_) => {
+                write!(f, "RepoStateUpdated")
+            }
+            AppEvent::WorkdirUpdated => {
+                write!(f, "WorkdirUpdated")
+            }
+            AppEvent::RemoteStateUpdated(_) => {
+                write!(f, "RemoteStateUpdated")
+            }
+            AppEvent::CommitGraphFetched(_, _) => {
+                write!(f, "CommitGraphFetched")
+            }
+            AppEvent::CommitFetched { .. } => {
+                write!(f, "CommitFetched")
+            }
+            AppEvent::DiffFetched { .. } => {
+                write!(f, "DiffFetched")
+            }
+            AppEvent::SearchFinished { .. } => {
+                write!(f, "SearchFinished")
+            }
+            AppEvent::Error(_) => {
+                write!(f, "Error")
+            }
+        }
+    }
 }
 
 pub struct App {
@@ -307,6 +397,9 @@ impl App {
                         (DiffTarget::Object(a), DiffTarget::Index) => repo
                             .modified_files_with_index(a)
                             .context("Failed to retrieve modified files")?,
+                        (DiffTarget::Index, DiffTarget::Workdir) => repo
+                            .modified_files_index_to_workdir()
+                            .context("failed to retrieve modified files")?,
                         _ => {
                             bail!("Unsupported diff target combination");
                         }
@@ -401,8 +494,12 @@ impl App {
                 // fetched the repo state and now we will not update the repo, however if we move
                 // this up and changing repos fails the old path will not be watched anymore, and
                 // we may miss an update in the old repo.
+                //
+                // FIXME: We need to unwatch the previous dir
                 self.notifier
                     .watch(repo.git_dir(), RecursiveMode::Recursive)?;
+                self.notifier
+                    .watch(repo.repo_root(), RecursiveMode::Recursive)?;
                 self.repo = Some(repo);
             }
             AppRequest::GetCommitGraph {
@@ -435,12 +532,43 @@ impl App {
                     bail!("Branches selected without valid repo");
                 }
             },
-            AppRequest::Refresh => {
-                let repo_state = self.get_repo_state()?;
+            AppRequest::Refresh { paths } => {
+                let Some(repo) = &mut self.repo else {
+                    return Ok(());
+                };
 
-                self.tx
-                    .send(AppEvent::RepoStateUpdated(repo_state))
-                    .context("Failed to send response branches")?;
+                // FIXME: Should this be split out somewhere
+                let git_dir = repo.git_dir();
+                let working_dir = repo.repo_root().to_path_buf();
+
+                let mut git_dir_update = false;
+                let mut working_dir_update = false;
+
+                for path in paths {
+                    if is_descendent(&path, git_dir) && !path_is_lock_file(&path) {
+                        git_dir_update = true;
+                    } else if is_descendent(&path, &working_dir)
+                        && !repo
+                            .is_ignored(&path)
+                            .context("failed to check if path is ignored")?
+                    {
+                        working_dir_update = true;
+                    }
+                }
+
+                if git_dir_update {
+                    let repo_state = self.get_repo_state()?;
+
+                    self.tx
+                        .send(AppEvent::RepoStateUpdated(repo_state))
+                        .context("Failed to send response branches")?;
+                }
+
+                if working_dir_update {
+                    self.tx
+                        .send(AppEvent::WorkdirUpdated)
+                        .context("failed to notify of workdir change")?;
+                }
             }
             AppRequest::UpdateRemotes { expected_repo } => {
                 let repo = self
@@ -546,14 +674,41 @@ fn path_is_lock_file(path: &Path) -> bool {
     extension == OsStr::new("lock")
 }
 
-fn debounce_event(notifier_rx: &Receiver<Result<Event, notify::Error>>) {
-    let debounce_max = Instant::now() + Duration::from_secs(2);
-    let debounce_period = Duration::from_millis(500);
+fn debounce_event(notifier_rx: &Receiver<Result<Event, notify::Error>>) -> Result<Vec<PathBuf>> {
+    struct DebouncedWatcher {
+        observed_paths: HashSet<PathBuf>,
+    }
 
-    while let Ok(_event) = notifier_rx.recv_timeout(debounce_period) {
-        if Instant::now() > debounce_max {
-            return;
+    impl DebouncedWatcher {
+        fn handle_event(&mut self, event: Result<Event, notify::Error>) -> Result<()> {
+            let event = event.context("failed to read event")?;
+            self.observed_paths.extend(event.paths);
+            Ok(())
         }
+    }
+
+    let mut watcher = DebouncedWatcher {
+        observed_paths: HashSet::new(),
+    };
+
+    let event = notifier_rx
+        .recv()
+        .context("failed to get event from notifier")?;
+    watcher
+        .handle_event(event)
+        .context("failed to handle event")?;
+
+    let debounce_end = Instant::now() + Duration::from_millis(500);
+
+    loop {
+        let wait_time = debounce_end - Instant::now();
+        let Ok(event) = notifier_rx.recv_timeout(wait_time) else {
+            return Ok(watcher.observed_paths.into_iter().collect());
+        };
+
+        watcher
+            .handle_event(event)
+            .context("failed to handle event")?;
     }
 }
 
@@ -561,23 +716,18 @@ fn spawn_watcher(app_tx: Sender<AppRequest>) -> Result<RecommendedWatcher> {
     let (notifier_tx, notifier_rx) = mpsc::channel();
     let notifier = notify::recommended_watcher(notifier_tx)?;
     thread::spawn(move || {
-        while let Ok(event) = notifier_rx.recv() {
-            let event = match event {
+        // Wait for event
+        loop {
+            // Debounce to avoid spam refreshing
+            let paths = match debounce_event(&notifier_rx) {
                 Ok(v) => v,
                 Err(e) => {
-                    error!("failed to read event: {e}");
-                    continue;
+                    error!("Notifier thread died: {e}");
+                    return;
                 }
             };
 
-            if event.paths.iter().all(|p| path_is_lock_file(p)) {
-                continue;
-            }
-
-            // Debounce to avoid spam refreshing
-            debounce_event(&notifier_rx);
-
-            if let Err(_e) = app_tx.send(AppRequest::Refresh) {
+            if let Err(_e) = app_tx.send(AppRequest::Refresh { paths }) {
                 info!("App handle is no longer valid, closing watcher");
                 return;
             }
@@ -593,6 +743,16 @@ pub fn commit_matches_search(commit: &Commit, search: &str) -> bool {
         || commit.message.contains(search)
     {
         return true;
+    }
+
+    false
+}
+
+fn is_descendent(path: &Path, potential_ancestor: &Path) -> bool {
+    for ancestor in path.ancestors() {
+        if ancestor == potential_ancestor {
+            return true;
+        }
     }
 
     false

@@ -146,6 +146,9 @@ impl GuiInner {
                     self.last_requsted_view_state = Default::default();
                 }
             }
+            AppEvent::WorkdirUpdated => {
+                self.commit_view.notify_workdir_updated();
+            }
             AppEvent::RemoteStateUpdated(remote_state) => {
                 if remote_state.repo == self.repo_state.repo {
                     self.download_dialog.update_remote_state(remote_state);
@@ -267,7 +270,7 @@ impl GuiInner {
     fn ensure_selected_commit_in_cache(&mut self) -> Result<()> {
         let selected_commit = match self.commit_log.selected_commit() {
             SelectedItem::Object(v) => v,
-            SelectedItem::Index | SelectedItem::None => return Ok(()),
+            SelectedItem::WorkingDir | SelectedItem::Index | SelectedItem::None => return Ok(()),
         };
 
         self.commit_cache.pin(selected_commit.clone());

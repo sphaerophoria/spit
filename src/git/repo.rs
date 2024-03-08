@@ -43,7 +43,13 @@ pub(crate) struct Repo {
 }
 
 impl Repo {
-    pub(crate) fn new(repo_root: PathBuf, allow_libgit2_fallback: bool) -> Result<Repo> {
+    pub(crate) fn new(mut repo_root: PathBuf, allow_libgit2_fallback: bool) -> Result<Repo> {
+        if repo_root.is_relative() {
+            repo_root = std::env::current_dir()
+                .context("failed to get cwd for relative repo root")?
+                .join(repo_root);
+        }
+
         let decompressor = Decompress::new(true);
         let ceiling_dirs: &[&Path] = &[];
         let git2_repo = git2::Repository::open_ext(
@@ -438,11 +444,44 @@ impl Repo {
 
         modified_files_between_trees(
             &self.git2_repo,
-            DiffTarget::Index,
             DiffTarget::Object(id.clone()),
-            &index_files,
+            DiffTarget::Index,
             &object_files,
+            &index_files,
         )
+    }
+
+    pub(crate) fn modified_files_index_to_workdir(&self) -> Result<ModifiedFiles> {
+        let modified_files = modified_files_in_dir(&self.repo_root, &self.git2_repo)
+            .context("failed to find modified files")?;
+        let index_files =
+            index_file_list(&self.git2_repo).context("failed to get files for index")?;
+
+        let mut workdir_files = index_files.clone();
+        for file in modified_files {
+            workdir_files.insert(
+                file.clone().into_os_string().into_encoded_bytes(),
+                FileListItem::Path(file),
+            );
+        }
+
+        modified_files_between_trees(
+            &self.git2_repo,
+            DiffTarget::Index,
+            DiffTarget::Workdir,
+            &index_files,
+            &workdir_files,
+        )
+    }
+
+    pub(crate) fn is_ignored(&self, path: &Path) -> Result<bool> {
+        let Ok(repo_relative_entry_path) = path.strip_prefix(&self.repo_root) else {
+            return Ok(false);
+        };
+
+        self.git2_repo
+            .is_path_ignored(repo_relative_entry_path)
+            .context("failed to check ignore for file")
     }
 }
 
@@ -612,10 +651,11 @@ fn find_packs(git_dir: &Path) -> Result<Vec<Pack>> {
         .collect()
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 enum FileListItem {
     Object(git2::Oid),
     Commit(git2::Oid),
+    Path(PathBuf),
 }
 
 fn index_file_list(git2_repo: &git2::Repository) -> Result<HashMap<Vec<u8>, FileListItem>> {
@@ -706,6 +746,9 @@ fn modified_files_between_trees(
                         return Ok(Some(stringized.into_bytes()));
                     }
                     FileListItem::Object(id) => id,
+                    FileListItem::Path(path) => {
+                        return Ok(Some(fs::read(path).context("failed to read workdir data")?))
+                    }
                 };
 
                 let object = git2_repo
@@ -743,6 +786,80 @@ fn modified_files_between_trees(
         files_b: content_2,
         labels,
     })
+}
+
+fn modified_files_in_dir_impl(
+    root: &Path,
+    path: &Path,
+    git2_repo: &git2::Repository,
+    output: &mut Vec<PathBuf>,
+    index: &git2::Index,
+) -> Result<()> {
+    let dir_iter = fs::read_dir(path).context("failed to get directory iterator")?;
+
+    for entry in dir_iter {
+        let entry = entry.context("failed to iterate directory")?;
+        let entry_path = entry.path();
+        debug!("Checking modified for {:?}", entry_path);
+
+        let repo_relative_entry_path = entry_path
+            .strip_prefix(root)
+            .expect("failed to strip root from entry path")
+            .to_path_buf();
+        debug!("repo relative path: {:?}", repo_relative_entry_path);
+
+        if git2_repo
+            .is_path_ignored(&repo_relative_entry_path)
+            .context("failed to check ignore for file")?
+        {
+            debug!("{:?} ignored", entry_path);
+            continue;
+        }
+
+        if entry
+            .file_type()
+            .context("failed to get file type of entry")?
+            .is_dir()
+        {
+            modified_files_in_dir_impl(root, &entry_path, git2_repo, output, index)?;
+            continue;
+        }
+
+        // git2/index.h git_index_stage_t
+        // https://libgit2.org/libgit2/ex/HEAD/ls-files.html#git_index_get_bypath-4
+        // NOTE: Wanted to use stage_any, but index entry is always none in that case
+        // FIXME: Need to think about merge conflicts later
+        const STAGE_NORMAL: i32 = 0;
+        let index_entry = match index.get_path(&repo_relative_entry_path, STAGE_NORMAL) {
+            Some(v) => v,
+            None => {
+                debug!("File not found in index");
+                output.push(repo_relative_entry_path);
+                continue;
+            }
+        };
+
+        let index_entry_blob = git2_repo
+            .find_blob(index_entry.id)
+            .context("failed to find blob")?;
+
+        let entry_content = fs::read(&entry_path).context("failed to read content of entry")?;
+        let index_content = index_entry_blob.content();
+
+        if entry_content != index_content {
+            debug!("Content did not match: {entry_content:?}, {index_content:?}");
+            output.push(repo_relative_entry_path);
+        }
+    }
+    Ok(())
+}
+
+fn modified_files_in_dir(path: &Path, git2_repo: &git2::Repository) -> Result<Vec<PathBuf>> {
+    let mut ret = Vec::new();
+    let mut index = git2_repo.index().context("failed to retrieve index")?;
+    index.read(false).context("failed to update index")?;
+    modified_files_in_dir_impl(path, path, git2_repo, &mut ret, &index)?;
+    Ok(ret)
 }
 
 #[cfg(test)]

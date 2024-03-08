@@ -16,6 +16,7 @@ use std::{fmt, path::PathBuf};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum DiffTarget {
+    Workdir,
     Index,
     Object(ObjectId),
 }
@@ -23,6 +24,7 @@ pub enum DiffTarget {
 impl fmt::Display for DiffTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DiffTarget::Workdir => write!(f, "working dir"),
             DiffTarget::Index => write!(f, "index"),
             DiffTarget::Object(id) => write!(f, "{}", id),
         }

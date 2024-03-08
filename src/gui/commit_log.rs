@@ -429,6 +429,7 @@ pub(super) enum CommitLogAction {
 
 #[derive(Clone, PartialEq)]
 pub(super) enum SelectedItem {
+    WorkingDir,
     Index,
     Object(ObjectId),
     None,
@@ -480,7 +481,7 @@ impl CommitLog {
     fn selected_commit_as_obj_id(&self) -> Option<&ObjectId> {
         match &self.selected_commit {
             SelectedItem::Object(v) => Some(v),
-            SelectedItem::None | SelectedItem::Index => None,
+            SelectedItem::WorkingDir | SelectedItem::None | SelectedItem::Index => None,
         }
     }
 
@@ -524,23 +525,34 @@ impl CommitLog {
             .show_rows(
                 ui,
                 row_height,
-                commit_graph.nodes.len() + 1,
+                commit_graph.nodes.len() + 2,
                 |ui, mut row_range| {
                     if row_range.start == 0 {
                         let converter = PositionConverter::new(ui, row_height, 0..0);
+
                         render_commit_node(ui, &GraphPoint { x: 0, y: 0 }, &converter, false);
+                        render_commit_node(ui, &GraphPoint { x: 0, y: 1 }, &converter, false);
+
                         ui.allocate_ui_at_rect(converter.text_rect(0), |ui| {
-                            let selected = self.selected_commit == SelectedItem::Index;
-                            let commit_message_response =
-                                render_commit_message(ui, "INDEX", selected);
-                            if commit_message_response.clicked() {
+                            let index_selected = self.selected_commit == SelectedItem::Index;
+                            let workdir_selected = self.selected_commit == SelectedItem::WorkingDir;
+
+                            let workdir_message_response =
+                                render_commit_message(ui, "Modified files", workdir_selected);
+                            if workdir_message_response.clicked() {
+                                self.selected_commit = SelectedItem::WorkingDir;
+                            }
+
+                            let index_message_response =
+                                render_commit_message(ui, "Index", index_selected);
+                            if index_message_response.clicked() {
                                 self.selected_commit = SelectedItem::Index;
                             }
                         });
                     }
 
-                    row_range.start = row_range.start.saturating_sub(1);
-                    row_range.end = row_range.end.saturating_sub(1);
+                    row_range.start = row_range.start.saturating_sub(2);
+                    row_range.end = row_range.end.saturating_sub(2);
 
                     Frame::none().show(ui, |ui| {
                         render_commit_graph(

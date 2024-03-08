@@ -1,6 +1,6 @@
 use crate::{
     app::RepoState,
-    git::{Commit, Diff, DiffTarget, ObjectId},
+    git::{Commit, Diff, DiffMetadata, DiffTarget, ObjectId},
     util::Cache,
 };
 
@@ -36,7 +36,9 @@ pub(super) enum CommitViewAction {
 pub(super) struct CommitView {
     repo_state: Arc<RepoState>,
     index_has_changed: bool,
+    workdir_has_changed: bool,
     last_requested_diff: Option<DiffRequest>,
+    last_received_diff: Option<DiffMetadata>,
     diff_options: DiffOptions,
     diff_view: Option<spiff_widget::DiffView>,
     search_bar: SearchBar,
@@ -53,6 +55,10 @@ impl CommitView {
         self.diff_view = None;
     }
 
+    pub(super) fn notify_workdir_updated(&mut self) {
+        self.workdir_has_changed = true;
+    }
+
     pub(super) fn update_with_repo_state(&mut self, repo_state: Arc<RepoState>) {
         if self.repo_state.index != repo_state.index {
             self.index_has_changed = true;
@@ -66,6 +72,7 @@ impl CommitView {
         } else {
             self.diff_view = Some(spiff_widget::DiffView::new(diff.diff.processed_diffs));
         }
+        self.last_received_diff = Some(diff.metadata);
     }
 
     pub(super) fn show(
@@ -109,6 +116,8 @@ impl CommitView {
                     SearchBarAction::Jump | SearchBarAction::None => (),
                 }
             });
+        } else {
+            ui.allocate_space(ui.available_size());
         }
 
         let request = construct_diff_request(
@@ -119,15 +128,45 @@ impl CommitView {
             &self.repo_state,
         );
 
+        let update_needed_from_index_change = || {
+            if !self.index_has_changed {
+                return false;
+            }
+
+            if request.as_ref().map(|x| x.to.clone()) == Some(DiffTarget::Index) {
+                return true;
+            }
+
+            if request.as_ref().map(|x| x.from.clone()) == Some(DiffTarget::Index) {
+                return true;
+            }
+
+            false
+        };
+
+        let update_needed_from_workdir_change = || {
+            self.workdir_has_changed
+                && request.as_ref().map(|x| x.to.clone()) == Some(DiffTarget::Workdir)
+        };
+
         if request != self.last_requested_diff
-            || (self.index_has_changed
-                && request.as_ref().map(|x| x.to.clone()) == Some(DiffTarget::Index))
+            || update_needed_from_index_change()
+            || update_needed_from_workdir_change()
         {
             self.last_requested_diff = request.clone();
             if let Some(request) = request {
+                if let Some(last_received_diff) = &self.last_received_diff {
+                    if last_received_diff.from != request.from
+                        || last_received_diff.to != request.to
+                    {
+                        self.diff_view = None;
+                    }
+                }
+
                 action = CommitViewAction::RequestDiff(request);
             }
             self.index_has_changed = false;
+            self.workdir_has_changed = false;
         }
 
         action
@@ -164,6 +203,11 @@ fn construct_diff_request(
             let to = DiffTarget::Index;
             (from, to)
         }
+        SelectedItem::WorkingDir => {
+            let from = DiffTarget::Index;
+            let to = DiffTarget::Workdir;
+            (from, to)
+        }
         _ => unimplemented!(),
     };
 
@@ -180,6 +224,7 @@ fn gen_commit_header(
     cached_commits: &Cache<ObjectId, Commit>,
 ) -> String {
     match selected_item {
+        SelectedItem::WorkingDir => "Modified files".to_string(),
         SelectedItem::Index => "Staged files".to_string(),
         SelectedItem::Object(id) => gen_commit_header_for_object(id, cached_commits),
         SelectedItem::None => panic!("no selected item"),
