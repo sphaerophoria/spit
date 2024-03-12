@@ -105,9 +105,9 @@ impl GuiInner {
                     warn!("Dropping commit in gui: {}", commit.metadata.id);
                 }
             }
-            AppEvent::DiffFetched { repo, diff } => {
+            AppEvent::DiffsFetched { repo, diffs } => {
                 if self.repo_state.repo == repo {
-                    self.commit_view.update_diff(diff);
+                    self.commit_view.update_diffs(diffs);
                 }
             }
             AppEvent::CommitGraphFetched(view_state, graph) => {
@@ -270,7 +270,7 @@ impl GuiInner {
     fn ensure_selected_commit_in_cache(&mut self) -> Result<()> {
         let selected_commit = match self.commit_log.selected_commit() {
             SelectedItem::Object(v) => v,
-            SelectedItem::WorkingDir | SelectedItem::Index | SelectedItem::None => return Ok(()),
+            SelectedItem::Index | SelectedItem::None => return Ok(()),
         };
 
         self.commit_cache.pin(selected_commit.clone());
@@ -288,13 +288,10 @@ impl GuiInner {
 
     fn handle_commit_view_action(&mut self, action: CommitViewAction) -> Result<()> {
         match action {
-            CommitViewAction::RequestDiff(diff_request) => {
-                self.tx.send(AppRequest::GetDiff {
+            CommitViewAction::RequestDiff(reqs) => {
+                self.tx.send(AppRequest::GetDiffs {
                     expected_repo: self.repo_state.repo.clone(),
-                    from: diff_request.from,
-                    to: diff_request.to,
-                    search_query: diff_request.search_query,
-                    options: diff_request.options,
+                    reqs,
                 })?;
             }
             CommitViewAction::None => (),
