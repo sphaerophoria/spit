@@ -459,17 +459,40 @@ impl Repo {
 
         let mut workdir_files = index_files.clone();
         for file in modified_files {
-            workdir_files.insert(
-                file.clone().into_os_string().into_encoded_bytes(),
-                FileListItem::Path(file),
-            );
+            let file_bytes = file.clone().into_os_string().into_encoded_bytes();
+            if workdir_files.contains_key(&file_bytes) {
+                workdir_files.insert(file_bytes, FileListItem::Path(file));
+            }
         }
 
         modified_files_between_trees(
             &self.git2_repo,
             DiffTarget::Index,
-            DiffTarget::Workdir,
+            DiffTarget::WorkingDirModified,
             &index_files,
+            &workdir_files,
+        )
+    }
+
+    pub(crate) fn untracked_files(&self) -> Result<ModifiedFiles> {
+        let modified_files = modified_files_in_dir(&self.repo_root, &self.git2_repo)
+            .context("failed to find modified files")?;
+        let index_files =
+            index_file_list(&self.git2_repo).context("failed to get files for index")?;
+
+        let mut workdir_files = HashMap::new();
+        for file in modified_files {
+            let file_bytes = file.clone().into_os_string().into_encoded_bytes();
+            if !index_files.contains_key(&file_bytes) {
+                workdir_files.insert(file_bytes, FileListItem::Path(file));
+            }
+        }
+
+        modified_files_between_trees(
+            &self.git2_repo,
+            DiffTarget::Index,
+            DiffTarget::WorkingDirUntracked,
+            &HashMap::new(),
             &workdir_files,
         )
     }

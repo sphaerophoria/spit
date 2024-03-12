@@ -9,7 +9,7 @@ use crate::{
 };
 
 use anyhow::{bail, Context, Error, Result};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use notify::{self, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use spiff::{DiffCollectionProcessor, DiffOptions};
 
@@ -81,6 +81,14 @@ struct DiffProcessorWithData {
     processor: Option<DiffCollectionProcessor<'static>>,
 }
 
+#[derive(PartialEq, Eq, Clone)]
+pub struct DiffRequest {
+    pub from: DiffTarget,
+    pub to: DiffTarget,
+    pub options: DiffOptions,
+    pub search_query: String,
+}
+
 pub enum AppRequest {
     OpenRepo(PathBuf),
     GetCommitGraph {
@@ -96,12 +104,9 @@ pub enum AppRequest {
         expected_repo: PathBuf,
         id: ObjectId,
     },
-    GetDiff {
+    GetDiffs {
         expected_repo: PathBuf,
-        from: DiffTarget,
-        to: DiffTarget,
-        options: DiffOptions,
-        search_query: String,
+        reqs: Vec<DiffRequest>,
     },
     Search {
         expected_repo: PathBuf,
@@ -137,7 +142,7 @@ impl fmt::Debug for AppRequest {
             AppRequest::GetCommit { .. } => {
                 write!(f, "GetCommit")
             }
-            AppRequest::GetDiff { .. } => {
+            AppRequest::GetDiffs { .. } => {
                 write!(f, "GetDiff")
             }
             AppRequest::Search { .. } => {
@@ -184,9 +189,9 @@ pub enum AppEvent {
         repo: PathBuf,
         commit: Commit,
     },
-    DiffFetched {
+    DiffsFetched {
         repo: PathBuf,
-        diff: Diff,
+        diffs: Vec<Diff>,
     },
     SearchFinished {
         viewer_id: String,
@@ -216,7 +221,7 @@ impl fmt::Debug for AppEvent {
             AppEvent::CommitFetched { .. } => {
                 write!(f, "CommitFetched")
             }
-            AppEvent::DiffFetched { .. } => {
+            AppEvent::DiffsFetched { .. } => {
                 write!(f, "DiffFetched")
             }
             AppEvent::SearchFinished { .. } => {
@@ -235,7 +240,7 @@ pub struct App {
     notifier: RecommendedWatcher,
     repo: Option<Repo>,
     // Pin<Box<..>> to allow self reference
-    processor: Option<Pin<Box<DiffProcessorWithData>>>,
+    processor: Vec<Pin<Box<DiffProcessorWithData>>>,
 }
 
 impl App {
@@ -249,7 +254,7 @@ impl App {
             rx: PriorityQueue::new(request_rx),
             notifier: spawn_watcher(request_tx)?,
             repo: None,
-            processor: None,
+            processor: Vec::new(),
         })
     }
 
@@ -360,12 +365,9 @@ impl App {
                     bail!("Commit requested without valid repo");
                 }
             },
-            AppRequest::GetDiff {
+            AppRequest::GetDiffs {
                 expected_repo,
-                from,
-                to,
-                options,
-                search_query,
+                reqs,
             } => {
                 let repo = self
                     .repo
@@ -373,74 +375,36 @@ impl App {
                     .ok_or_else(|| Error::msg("Commit requested without valid repo"))?;
 
                 if expected_repo != repo.repo_root() {
-                    debug!(
-                        "Ignoring diff request for {} -> {}, {} is no longer open",
-                        from,
-                        to,
+                    warn!(
+                        "Ignoring diff request for closed repo {}",
                         expected_repo.display()
                     );
                     return Ok(());
                 }
 
-                if self.processor.as_ref().map(|x| &x.data.id_a) != Some(&from)
-                    || self.processor.as_ref().map(|x| &x.data.id_b) != Some(&to)
-                    // Index is malleable, there is not a single identifier like for objects. We
-                    // could cache the list of object IDs for all items in the index, however this
-                    // doesn't seem worth it when we can just refresh it
-                    || from == DiffTarget::Index
-                    || to == DiffTarget::Index
-                {
-                    let modified_files = match (&from, &to) {
-                        (DiffTarget::Object(a), DiffTarget::Object(b)) => repo
-                            .modified_files(a, b)
-                            .context("Failed to retrieve modified files")?,
-                        (DiffTarget::Object(a), DiffTarget::Index) => repo
-                            .modified_files_with_index(a)
-                            .context("Failed to retrieve modified files")?,
-                        (DiffTarget::Index, DiffTarget::Workdir) => repo
-                            .modified_files_index_to_workdir()
-                            .context("failed to retrieve modified files")?,
-                        _ => {
-                            bail!("Unsupported diff target combination");
-                        }
-                    };
+                let mut diffs = Vec::new();
+                ensure_processors_are_for_reqs(&mut self.processor, &reqs, repo)
+                    .context("failed to re-construct processors")?;
+                for (container, req) in self.processor.iter_mut().zip(reqs) {
+                    let processor = container.processor.as_mut().unwrap();
+                    processor.process_new_options(&req.options);
+                    // FIXME: Only issued on the "next" diff
+                    processor.set_search_query(req.search_query);
+                    let processed_diffs = processor.generate();
 
-                    self.processor = Some(Box::pin(DiffProcessorWithData {
-                        data: modified_files,
-                        processor: None,
-                    }));
-
-                    // HACK
-                    // The DiffCollectionProcessor internally stores different views of the input
-                    // data. It's API forces the data to be stored externally.
-                    //
-                    // At this level of abstraction anywhere we want to store the data across
-                    // calls forces self reference. Wrap our processor in a Pin<Box<..>> as a
-                    // guarantee that it does not move. Since our processor now lives in the same
-                    // struct as the data, we know that the data will not go out of scope while it
-                    // is still in use. We can transmute the struct to clobber the incorrect
-                    // lifetimes and move on
-                    let processor = self.processor.as_mut().unwrap();
-                    let internal_processor = DiffCollectionProcessor::new(
-                        &processor.data.files_a,
-                        &processor.data.files_b,
-                        &processor.data.labels,
-                    )?;
-                    processor.processor = unsafe { std::mem::transmute(internal_processor) };
+                    diffs.push(Diff {
+                        metadata: git::DiffMetadata {
+                            from: req.from,
+                            to: req.to,
+                            options: req.options,
+                        },
+                        diff: processed_diffs,
+                    });
                 }
 
-                let container = self.processor.as_mut().unwrap();
-                let processor = container.processor.as_mut().unwrap();
-                processor.process_new_options(&options);
-                processor.set_search_query(search_query);
-                let processed_diffs = processor.generate();
-
-                self.tx.send(AppEvent::DiffFetched {
+                self.tx.send(AppEvent::DiffsFetched {
                     repo: expected_repo,
-                    diff: Diff {
-                        metadata: git::DiffMetadata { from, to, options },
-                        diff: processed_diffs,
-                    },
+                    diffs,
                 })?;
             }
             AppRequest::Search {
@@ -756,6 +720,82 @@ fn is_descendent(path: &Path, potential_ancestor: &Path) -> bool {
     }
 
     false
+}
+
+fn create_processor_for_req(
+    req: &DiffRequest,
+    repo: &Repo,
+) -> Result<Pin<Box<DiffProcessorWithData>>> {
+    let modified_files = match (&req.from, &req.to) {
+        (DiffTarget::Object(a), DiffTarget::Object(b)) => repo
+            .modified_files(a, b)
+            .context("Failed to retrieve modified files")?,
+        (DiffTarget::Object(a), DiffTarget::Index) => repo
+            .modified_files_with_index(a)
+            .context("Failed to retrieve modified files")?,
+        (DiffTarget::Index, DiffTarget::WorkingDirModified) => repo
+            .modified_files_index_to_workdir()
+            .context("failed to retrieve modified files")?,
+        (DiffTarget::Index, DiffTarget::WorkingDirUntracked) => repo
+            .untracked_files()
+            .context("failed to retrieve modified files")?,
+        _ => {
+            bail!("Unsupported diff target combination");
+        }
+    };
+
+    let mut processor = Box::pin(DiffProcessorWithData {
+        data: modified_files,
+        processor: None,
+    });
+
+    // HACK
+    // The DiffCollectionProcessor internally stores different views of the input
+    // data. It's API forces the data to be stored externally.
+    //
+    // At this level of abstraction anywhere we want to store the data across
+    // calls forces self reference. Wrap our processor in a Pin<Box<..>> as a
+    // guarantee that it does not move. Since our processor now lives in the same
+    // struct as the data, we know that the data will not go out of scope while it
+    // is still in use. We can transmute the struct to clobber the incorrect
+    // lifetimes and move on
+    let internal_processor = DiffCollectionProcessor::new(
+        &processor.data.files_a,
+        &processor.data.files_b,
+        &processor.data.labels,
+    )?;
+    processor.processor = unsafe { std::mem::transmute(internal_processor) };
+    Ok(processor)
+}
+
+fn ensure_processors_are_for_reqs(
+    processors: &mut Vec<Pin<Box<DiffProcessorWithData>>>,
+    reqs: &[DiffRequest],
+    repo: &Repo,
+) -> Result<()> {
+    for (i, req) in reqs.iter().enumerate() {
+        let processor = match processors.get_mut(i) {
+            Some(v) => v,
+            None => {
+                processors.push(create_processor_for_req(req, repo)?);
+                continue;
+            }
+        };
+
+        if processor.data.id_a != req.from
+            || processor.data.id_b != req.to
+            // Index is malleable, there is not a single identifier like for objects. We
+            // could cache the list of object IDs for all items in the index, however this
+            // doesn't seem worth it when we can just refresh it
+            //
+            // FIXME: Are there cases where this does not hold true
+            || req.from == DiffTarget::Index
+            || req.to == DiffTarget::Index
+        {
+            *processor = create_processor_for_req(req, repo)?
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

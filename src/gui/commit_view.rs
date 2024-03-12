@@ -1,5 +1,5 @@
 use crate::{
-    app::RepoState,
+    app::{DiffRequest, RepoState},
     git::{Commit, Diff, DiffMetadata, DiffTarget, ObjectId},
     util::Cache,
 };
@@ -19,16 +19,8 @@ struct ProcessedDiffOffset {
     string_index: usize,
 }
 
-#[derive(PartialEq, Eq, Clone)]
-pub(super) struct DiffRequest {
-    pub(super) options: DiffOptions,
-    pub(super) from: DiffTarget,
-    pub(super) to: DiffTarget,
-    pub(super) search_query: String,
-}
-
 pub(super) enum CommitViewAction {
-    RequestDiff(DiffRequest),
+    RequestDiff(Vec<DiffRequest>),
     None,
 }
 
@@ -37,10 +29,10 @@ pub(super) struct CommitView {
     repo_state: Arc<RepoState>,
     index_has_changed: bool,
     workdir_has_changed: bool,
-    last_requested_diff: Option<DiffRequest>,
-    last_received_diff: Option<DiffMetadata>,
+    last_requested_diff: Vec<DiffRequest>,
+    last_received_diff: Vec<DiffMetadata>,
     diff_options: DiffOptions,
-    diff_view: Option<spiff_widget::DiffView>,
+    diff_views: Vec<spiff_widget::DiffView>,
     search_bar: SearchBar,
     search_query: String,
 }
@@ -51,8 +43,8 @@ impl CommitView {
     }
 
     pub(super) fn reset(&mut self) {
-        self.last_requested_diff = None;
-        self.diff_view = None;
+        self.last_requested_diff = Vec::new();
+        self.diff_views = Vec::new();
     }
 
     pub(super) fn notify_workdir_updated(&mut self) {
@@ -66,13 +58,15 @@ impl CommitView {
         self.repo_state = repo_state;
     }
 
-    pub(super) fn update_diff(&mut self, diff: Diff) {
-        if let Some(diff_view) = &mut self.diff_view {
-            diff_view.update_data(diff.diff.processed_diffs);
-        } else {
-            self.diff_view = Some(spiff_widget::DiffView::new(diff.diff.processed_diffs));
+    pub(super) fn update_diffs(&mut self, diffs: Vec<Diff>) {
+        self.diff_views.clear();
+        self.last_received_diff.clear();
+
+        for diff in diffs {
+            self.diff_views
+                .push(spiff_widget::DiffView::new(diff.diff.processed_diffs));
+            self.last_received_diff.push(diff.metadata);
         }
-        self.last_received_diff = Some(diff.metadata);
     }
 
     pub(super) fn show(
@@ -97,30 +91,31 @@ impl CommitView {
             _ => selected_commit,
         };
 
-        if let Some(diff_view) = &mut self.diff_view {
-            ScrollArea::vertical().show(ui, |ui| {
+        if !self.diff_views.is_empty() {
+            let headers = gen_commit_headers(selected_commit, cached_commits);
+
+            let num_diff_views = self.diff_views.len();
+
+            if num_diff_views == 1 {
                 let action = search_bar_wrapped(&mut self.search_bar, ui, |ui, jump_idx| {
-                    let message = gen_commit_header(selected_commit, cached_commits);
-                    TextEdit::multiline(&mut message.as_str())
-                        .font(TextStyle::Monospace)
-                        .desired_rows(1)
-                        .desired_width(ui.available_width())
-                        .ui(ui);
-                    diff_view.show(ui, jump_idx, force_open);
+                    render_diffs(ui, jump_idx, &headers, &mut self.diff_views, force_open);
                 })
                 .action;
+
                 match action {
                     SearchBarAction::UpdateSearch(s) => {
                         self.search_query = s;
                     }
                     SearchBarAction::Jump | SearchBarAction::None => (),
                 }
-            });
+            } else {
+                render_diffs(ui, None, &headers, &mut self.diff_views, force_open);
+            }
         } else {
             ui.allocate_space(ui.available_size());
         }
 
-        let request = construct_diff_request(
+        let requests = construct_diff_requests(
             selected_commit,
             &self.diff_options,
             cached_commits,
@@ -133,11 +128,11 @@ impl CommitView {
                 return false;
             }
 
-            if request.as_ref().map(|x| x.to.clone()) == Some(DiffTarget::Index) {
+            if requests.iter().any(|x| x.to == DiffTarget::Index) {
                 return true;
             }
 
-            if request.as_ref().map(|x| x.from.clone()) == Some(DiffTarget::Index) {
+            if requests.iter().any(|x| x.from == DiffTarget::Index) {
                 return true;
             }
 
@@ -146,24 +141,22 @@ impl CommitView {
 
         let update_needed_from_workdir_change = || {
             self.workdir_has_changed
-                && request.as_ref().map(|x| x.to.clone()) == Some(DiffTarget::Workdir)
+                && requests
+                    .iter()
+                    .any(|x| x.to == DiffTarget::WorkingDirModified)
         };
 
-        if request != self.last_requested_diff
+        if requests != self.last_requested_diff
             || update_needed_from_index_change()
             || update_needed_from_workdir_change()
         {
-            self.last_requested_diff = request.clone();
-            if let Some(request) = request {
-                if let Some(last_received_diff) = &self.last_received_diff {
-                    if last_received_diff.from != request.from
-                        || last_received_diff.to != request.to
-                    {
-                        self.diff_view = None;
-                    }
-                }
+            self.last_requested_diff = requests.clone();
+            if !received_diffs_match_request_targets(&requests, &self.last_received_diff) {
+                self.diff_views = Vec::new();
+            }
 
-                action = CommitViewAction::RequestDiff(request);
+            if !requests.is_empty() {
+                action = CommitViewAction::RequestDiff(requests);
             }
             self.index_has_changed = false;
             self.workdir_has_changed = false;
@@ -173,18 +166,61 @@ impl CommitView {
     }
 }
 
-fn construct_diff_request(
+fn render_diffs(
+    ui: &mut Ui,
+    jump_idx: Option<(usize, usize)>,
+    headers: &[String],
+    diff_views: &mut [spiff_widget::DiffView],
+    force_open: Option<bool>,
+) {
+    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        for (view, header) in diff_views.iter_mut().zip(headers) {
+            TextEdit::multiline(&mut header.as_str())
+                .font(TextStyle::Monospace)
+                .desired_rows(1)
+                .desired_width(ui.available_width())
+                .ui(ui);
+
+            view.show(ui, jump_idx, force_open);
+        }
+    });
+}
+
+fn received_diffs_match_request_targets(req: &[DiffRequest], received: &[DiffMetadata]) -> bool {
+    if req.len() != received.len() {
+        return false;
+    }
+
+    for (req_item, response_item) in req.iter().zip(received) {
+        if req_item.from != response_item.from {
+            return false;
+        }
+
+        if req_item.to != response_item.to {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn construct_diff_requests(
     selected_item: &SelectedItem,
     options: &DiffOptions,
     commit_cache: &Cache<ObjectId, Commit>,
     search_query: &str,
     repo_state: &RepoState,
-) -> Option<DiffRequest> {
-    let (from, to) = match selected_item {
+) -> Vec<DiffRequest> {
+    struct Pair {
+        from: DiffTarget,
+        to: DiffTarget,
+    }
+
+    let pairs = match selected_item {
         SelectedItem::Object(id) => {
             let commit = match commit_cache.get(id) {
                 Some(v) => v,
-                None => return None,
+                None => return Vec::new(),
             };
 
             let parent = match commit.metadata.parents.first() {
@@ -192,41 +228,55 @@ fn construct_diff_request(
                 // FIXME: Support initial commit
                 // FIXME: Support range of commits
                 Some(v) => v,
-                None => return None,
+                None => return Vec::new(),
             };
             let from = DiffTarget::Object(parent.clone());
             let to = DiffTarget::Object(id.clone());
-            (from, to)
+            vec![Pair { from, to }]
         }
         SelectedItem::Index => {
-            let from = DiffTarget::Object(repo_state.head_object_id());
-            let to = DiffTarget::Index;
-            (from, to)
-        }
-        SelectedItem::WorkingDir => {
-            let from = DiffTarget::Index;
-            let to = DiffTarget::Workdir;
-            (from, to)
+            vec![
+                Pair {
+                    from: DiffTarget::Object(repo_state.head_object_id()),
+                    to: DiffTarget::Index,
+                },
+                Pair {
+                    from: DiffTarget::Index,
+                    to: DiffTarget::WorkingDirModified,
+                },
+                Pair {
+                    from: DiffTarget::Index,
+                    to: DiffTarget::WorkingDirUntracked,
+                },
+            ]
         }
         _ => unimplemented!(),
     };
 
-    Some(DiffRequest {
-        from,
-        to,
-        options: options.clone(),
-        search_query: search_query.to_string(),
-    })
+    pairs
+        .into_iter()
+        .map(|p| DiffRequest {
+            from: p.from,
+            to: p.to,
+            options: options.clone(),
+            search_query: search_query.to_string(),
+        })
+        .collect()
 }
 
-fn gen_commit_header(
+fn gen_commit_headers(
     selected_item: &SelectedItem,
     cached_commits: &Cache<ObjectId, Commit>,
-) -> String {
+) -> Vec<String> {
     match selected_item {
-        SelectedItem::WorkingDir => "Modified files".to_string(),
-        SelectedItem::Index => "Staged files".to_string(),
-        SelectedItem::Object(id) => gen_commit_header_for_object(id, cached_commits),
+        SelectedItem::Index => {
+            vec![
+                "Staged files".to_string(),
+                "Modified files".to_string(),
+                "Untracked files".to_string(),
+            ]
+        }
+        SelectedItem::Object(id) => vec![gen_commit_header_for_object(id, cached_commits)],
         SelectedItem::None => panic!("no selected item"),
     }
 }
