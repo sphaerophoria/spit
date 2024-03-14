@@ -20,7 +20,7 @@ rfd = "0.14.0"
 notify = "6.1.1"
 shell-escape = "0.1.5"
 clipboard = "0.5.0"
-spiff = { git = "https://github.com/sphaerophoria/spiff", rev = "4e990c52ba45c15d6fe85065f6c21df800ebdb09" }
+spiff = { git = "https://github.com/sphaerophoria/spiff", rev = "e6770120108a931425560c6d90628e54e8a07f1b" }
 
 [dev-dependencies]
 tempfile = "3.10.1"

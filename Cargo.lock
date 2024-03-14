@@ -1983,7 +1983,7 @@ checksum = "9c198f91728a82281a64e1f4f9eeb25d82cb32a5de251c6bd1b5154d63a8e7bd"
 [[package]]
 name = "libdiff"
 version = "0.1.0"
-source = "git+https://github.com/sphaerophoria/spiff?rev=4e990c52ba45c15d6fe85065f6c21df800ebdb09#4e990c52ba45c15d6fe85065f6c21df800ebdb09"
+source = "git+https://github.com/sphaerophoria/spiff?rev=e6770120108a931425560c6d90628e54e8a07f1b#e6770120108a931425560c6d90628e54e8a07f1b"
 dependencies = [
  "rayon",
 ]
@@ -2986,7 +2986,7 @@ dependencies = [
 [[package]]
 name = "spiff"
 version = "0.1.0"
-source = "git+https://github.com/sphaerophoria/spiff?rev=4e990c52ba45c15d6fe85065f6c21df800ebdb09#4e990c52ba45c15d6fe85065f6c21df800ebdb09"
+source = "git+https://github.com/sphaerophoria/spiff?rev=e6770120108a931425560c6d90628e54e8a07f1b#e6770120108a931425560c6d90628e54e8a07f1b"
 dependencies = [
  "ansi_term",
  "anyhow",
